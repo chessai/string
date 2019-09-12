@@ -1,9 +1,0 @@
-{-# language
-    NoImplicitPrelude
-  #-}
-
-signature String
-  ( String
-  ) where
-
-data String

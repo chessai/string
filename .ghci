@@ -1,0 +1,4 @@
+:set -XOverloadedStrings
+
+import Prelude hiding (String)
+import String.Ascii
