@@ -1,0 +1,6 @@
+packages: .
+
+source-repository-package
+  type: git
+  location: https://github.com/haskell-primitive/primitive-convenience
+  tag: 15f302eb224c17fea90cabe35f13ccffba7e80c6
