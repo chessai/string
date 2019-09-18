@@ -26,6 +26,7 @@ module String.Ascii
   , asByteArray
   , toSlice
   , unsafeToSlice
+  , toByteArray
   ) where
 
 import Control.Monad.ST (runST)
