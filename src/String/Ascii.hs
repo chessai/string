@@ -3,8 +3,11 @@
   , DerivingStrategies
   , MagicHash
   , MonoLocalBinds
+  , OverloadedStrings
   , RankNTypes
+  , ScopedTypeVariables
   , StandaloneDeriving
+  , TypeApplications
   , UnboxedTuples
   #-}
 
@@ -27,14 +30,18 @@ module String.Ascii
   , toSlice
   , unsafeToSlice
   , toByteArray
+  , fromByteArray
+  , unsafeFromByteArray
   ) where
 
 import Control.Monad.ST (runST)
 import Control.Monad.Primitive (primitive_)
 import Control.Monad.Primitive.Convenience (MonadPrim)
+import Data.Monoid (All(..))
+import Data.Bits (Bits((.&.)))
 import Data.Primitive.ByteArray
 import Data.Primitive.Types
-import Data.Word (Word8)
+import Data.Word (Word8,Word64)
 import GHC.Exts hiding (build, compareByteArrays#, toList)
 
 import qualified Data.Char as Char
@@ -323,3 +330,105 @@ toByteArray :: String -> ByteArray
 toByteArray (String b#) = ByteArray b#
 {-# inline toByteArray #-}
 
+unsafeFromByteArray :: ByteArray -> String
+unsafeFromByteArray (ByteArray b#) = String b#
+{-# inline unsafeFromByteArray #-}
+
+fromByteArray :: ByteArray -> Maybe String
+fromByteArray b@(ByteArray b#) = if isAscii b
+  then Just (String b#)
+  else Nothing
+{-# inline fromByteArray #-}
+
+-- naive, should be improved
+isAscii :: ByteArray -> Bool
+isAscii b = go 0
+  where
+    len = sizeofByteArray b
+    go !ix = if ix < len
+      then case indexByteArray b ix of
+        w -> if w < m8 then go (ix + 1) else False
+      else True
+
+-- | Binary:
+--     1000000010000000100000001000000010000000100000001000000010000000
+--   Decimal:
+--     9259542123273814144
+m64 :: Word64
+{-# inline m64 #-}
+m64 = 0x8080808080808080
+
+-- | Binary:
+--     10000000
+--   Decimal:
+--     128
+m8 :: Word8
+{-# inline m8 #-}
+m8 = 0x80
+
+{-
+isAsciiPtrW64 :: ByteArray -> Int -> Int -> Bool
+isAsciiPtrW64 b !p !q
+  | p == q = True
+  | otherwise = case indexByteArray b p of
+      (w :: Word64) -> if isAsciiW64 w
+        then isAsciiPtrW64 b (p + 8) q
+        else False
+
+isAsciiPtrW8 :: ByteArray -> Int -> Int -> Bool
+isAsciiPtrW8 b !p !q
+  | p == q = True
+  | otherwise = case indexByteArray b p of
+      (w :: Word8) -> if isAsciiW8 w
+        then isAsciiPtrW8 b (p + 1) q
+        else False
+
+
+
+isAsciiW64 :: Word64 -> Bool
+isAsciiW64 w = w .&. m64 == 0
+
+isAsciiW8 :: Word8 -> Bool
+isAsciiW8 w = w .&. m8 == 0
+
+isAsciiSmall :: ByteArray -> Int -> Int -> Bool
+isAsciiSmall b off len = go off
+  where
+    go !ix = if ix < len
+      then case indexByteArray b ix of
+        w -> if w < m8 then go (ix + 1) else False
+      else True
+
+alignPtrPos :: Int -> Int
+alignPtrPos !(I# i#) = I# (case remInt# i# 8# of
+  0# -> i#
+  n# -> i# +# (8# -# n#))
+
+alignPtrNeg :: Int -> Int
+alignPtrNeg !(I# i#) = I# (case remInt# i# 8# of
+  0# -> i#
+  n# -> i# +# (negateInt# n#))
+{-# inline alignPtrNeg #-}
+
+isAscii :: ByteArray -> Int -> Int -> Bool
+isAscii b off len
+  | len < 8 = isAsciiSmall b off len
+  | otherwise =
+      let
+        startPre, endPre, startMid, endMid, startPost, endPost :: Int
+        startPre  = off
+        endPre    = alignPtrPos startPre
+        startMid  = endPre
+        endMid    = startPost
+        startPost = alignPtrNeg endPost
+        endPost   = off + len
+
+        startIsAscii = isAsciiPtrW8 b startPre endPre
+      in if startIsAscii
+        then
+          let endIsAscii = isAsciiPtrW8 b startPost endPost
+          in if endIsAscii
+            then isAsciiPtrW64 b startMid endMid
+            else False
+        else False
+-}
