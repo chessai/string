@@ -20,9 +20,12 @@ module String.Ascii
 
   , empty
   , append
-
+  , length
   , foldr
   , foldl'
+  , asByteArray
+  , toSlice
+  , unsafeToSlice
   ) where
 
 import Control.Monad.ST (runST)
