@@ -121,6 +121,9 @@ compareByteArrays# b0# b1# n# =
   compare (I# (Exts.compareByteArrays# b0# 0# b1# 0# n#)) 0
 {-# inline compareByteArrays# #-}
 
+instance Ord String where
+  compare b0 b1 = compare (toByteArray b0) (toByteArray b1)
+
 instance Semigroup String where
   (<>) = append
   {-# inline (<>) #-}
