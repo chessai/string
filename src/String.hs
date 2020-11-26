@@ -9,40 +9,22 @@
   , StandaloneDeriving
   , TypeApplications
   , UnboxedTuples
-  #-}
+#-}
 
-
-module String.Ascii
-  ( -- * Types
-    -- ** Unsliced Strings
-    String
-    -- ** Sliced Strings
-  , Slice
-    -- ** Builders
-  , Builder
-
-  , empty
+module String
+  ( String
   , append
-  , length
-  , foldr
-  , foldl'
-  , asByteArray
-  , toSlice
-  , unsafeToSlice
-  , toByteArray
-  , fromByteArray
-  , unsafeFromByteArray
+  , empty
   ) where
 
-import Control.Monad.ST (runST)
+import GHC.ST (ST(..), runST)
 import Control.Monad.Primitive (primitive_)
-import Control.Monad.Primitive.Convenience (MonadPrim)
 import Data.Monoid (All(..))
 import Data.Bits (Bits((.&.)))
 import Data.Primitive.ByteArray
 import Data.Primitive.Types
 import Data.Word (Word8,Word64)
-import GHC.Exts hiding (build, compareByteArrays#, toList)
+import GHC.Exts hiding (build, toList)
 
 import qualified Data.Char as Char
 import qualified Data.List as List
@@ -50,8 +32,6 @@ import qualified GHC.Base as Base
 import qualified GHC.Exts as Exts
 
 import Prelude hiding (String, length, Foldable(..))
-
-import qualified Builder as B
 
 {- | api sketch
 -- querying
@@ -69,39 +49,35 @@ fromAsciiLossy :: PrimArray Word8 -> String
 fromUtf8Lossy  :: PrimArray Word8 -> String
 fromUtf16Lossy :: PrimArray Word8 -> String
 fromUtf32Lossy :: PrimArray Word8 -> String
-
--- Slices
-data Slice
 -}
 
 -----------
 -- Types --
 -----------
 
-data String = String ByteArray#
+data String = String
+  ByteArray# -- buffer
+  Int#       -- offset
+  Int#       -- length
 
-data Slice = Slice
-  {-# UNPACK #-} !String -- buffer
-  {-# UNPACK #-} !Int    -- offset
-  {-# UNPACK #-} !Int    -- length
-
-data MutableString s = MutableString (MutableByteArray# s)
-
-data MutableSlice s = MutableSlice
-  {-# UNPACK #-} !(MutableString s) -- buffer
-  {-# UNPACK #-} !Int               -- offset
-  {-# UNPACK #-} !Int               -- length
+data MutableString s = MutableString
+  (MutableByteArray# s) -- buffer
+  Int#                  -- offset
+  Int#                  -- length
 
 ---------------
 -- Instances --
 ---------------
 
 instance Eq String where
-  String b0# == String b1#
-    | sameByteArray# b0# b1# = True
-    | lengthNeq b0# b1# = False
-    | otherwise = compareByteArrays# b0# b1# (sizeofByteArray# b0#) == EQ
-  {-# inline (==) #-}
+  String buf0 off0 len0 == String buf1 off1 len1
+    | neq len0 len1 = False
+    | neq off0 off1 = False
+    | sameByteArray# buf0 buf1 = True
+    | otherwise =
+        case compareByteArrays# buf0 off0 buf1 off1 len0 of
+          0# -> True
+          _  -> False
 
 sameByteArray# :: ByteArray# -> ByteArray# -> Bool
 sameByteArray# b0# b1# =
@@ -109,18 +85,33 @@ sameByteArray# b0# b1# =
     r -> isTrue# r
 {-# inline sameByteArray# #-}
 
-lengthNeq :: ByteArray# -> ByteArray# -> Bool
-lengthNeq b0# b1# =
-  case sizeofByteArray# b0# ==# sizeofByteArray# b1# of
-    0# -> True
-    _  -> False
-{-# inline lengthNeq #-}
+neq :: Int# -> Int# -> Bool
+neq x y = case x ==# y of { 0# -> True; _ -> False; }
+{-# inline neq #-}
 
-compareByteArrays# :: ByteArray# -> ByteArray# -> Int# -> Ordering
-compareByteArrays# b0# b1# n# =
-  compare (I# (Exts.compareByteArrays# b0# 0# b1# 0# n#)) 0
-{-# inline compareByteArrays# #-}
+append :: String -> String -> String
+append (String _ _ 0#) b = b
+append a (String _ _ 0#) = a
+append (String buf0 off0 len0) (String buf1 off1 len1) =
+  let len = len0 +# len1
+      ByteArray buf = runByteArrayST $ ST $ \s0 ->
+        case newByteArray# len s0 of
+          (# s1, buf #) -> case copyByteArray# buf0 off0 buf 0# len0 s1 of
+            s2 -> case copyByteArray# buf1 off1 buf len1 len1 s2 of
+              s3 -> case unsafeFreezeByteArray# buf s3 of
+                (# s4, b #) -> (# s4, ByteArray b #)
+  in String buf 0# len
+{-# inline append #-}
 
+empty :: String
+empty = String (case mempty of { ByteArray b -> b }) 0# 0#
+
+runByteArrayST :: (forall s. ST s ByteArray) -> ByteArray
+runByteArrayST f = ByteArray (runRW# (\s0 -> case f of { ST g -> case g s0 of { (# _, ByteArray r #) -> r }}))
+{-# inline runByteArrayST #-}
+
+
+{-
 instance Ord String where
   compare b0 b1 = compare (toByteArray b0) (toByteArray b1)
 
@@ -137,48 +128,13 @@ instance IsString String where
 
 instance Show String where
   show s = "\"" ++ toList s ++ "\""
-
-deriving stock instance Eq Slice
-
-instance Semigroup Slice where
-  (<>) = appendSlice
-  {-# inline (<>) #-}
-
-instance Monoid Slice where
-  mempty = emptySlice
-  {-# inline mempty #-}
+-}
 
 ---------------
 -- Functions --
 ---------------
 
--- | Convert a 'String' to a 'Slice', without copying.
---   This function is unsafe because it does not check
---   the validity of the length and offset.
-unsafeToSlice :: ()
-  => String -- ^ String
-  -> Int    -- ^ Offset
-  -> Int    -- ^ Length
-  -> Slice
-unsafeToSlice = Slice
-
--- | Convert a 'String' to a 'Slice', without copying.
---   Returns 'Nothing' if the length and offset are invalid.
---
---   The length (len) and offset (off) are valid if, for some
---   @str :: 'String'@:
---
---   @off < len && len <= length str@
---
-toSlice :: ()
-  => String
-  -> Int
-  -> Int
-  -> Maybe Slice
-toSlice s off len
-  | off < len && len <= length s = Just (unsafeToSlice s off len)
-  | otherwise = Nothing
-
+{-
 -- | Copy a slice of a 'MutableString' into another
 --   'MutableString'. The two slices may not overlap.
 copyMutable :: MonadPrim s m
@@ -434,4 +390,5 @@ isAscii b off len
             then isAsciiPtrW64 b startMid endMid
             else False
         else False
+-}
 -}
