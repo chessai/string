@@ -1,4 +1,8 @@
 :set -XOverloadedStrings
+:set -XMagicHash
 
 import Prelude hiding (String)
-import String.Ascii
+import GHC.Exts
+import GHC.Word
+
+default (Word8)

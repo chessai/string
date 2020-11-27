@@ -1,34 +1,21 @@
 {-# language
     BangPatterns
-  , DerivingStrategies
   , MagicHash
-  , MonoLocalBinds
+  , MultiWayIf
   , OverloadedStrings
   , RankNTypes
   , ScopedTypeVariables
-  , StandaloneDeriving
-  , TypeApplications
+  , TypeFamilies
   , UnboxedTuples
 #-}
 
-module String
-  ( String
-  , append
-  , empty
-  ) where
+module String where
 
-import GHC.ST (ST(..), runST)
-import Control.Monad.Primitive (primitive_)
-import Data.Monoid (All(..))
-import Data.Bits (Bits((.&.)))
+import Data.Bits ((.&.), (.|.), unsafeShiftL)
 import Data.Primitive.ByteArray
-import Data.Primitive.Types
-import Data.Word (Word8,Word64)
+import GHC.Word (Word8(..), Word16(..), Word32(..))
 import GHC.Exts hiding (build, toList)
 
-import qualified Data.Char as Char
-import qualified Data.List as List
-import qualified GHC.Base as Base
 import qualified GHC.Exts as Exts
 
 import Prelude hiding (String, length, Foldable(..))
@@ -60,10 +47,10 @@ data String = String
   Int#       -- offset
   Int#       -- length
 
-data MutableString s = MutableString
-  (MutableByteArray# s) -- buffer
-  Int#                  -- offset
-  Int#                  -- length
+--data MutableString s = MutableString
+--  (MutableByteArray# s) -- buffer
+--  Int#                  -- offset
+--  Int#                  -- length
 
 ---------------
 -- Instances --
@@ -78,6 +65,113 @@ instance Eq String where
         case compareByteArrays# buf0 off0 buf1 off1 len0 of
           0# -> True
           _  -> False
+  {-# inline (==) #-}
+
+instance Ord String where
+  compare = todo
+
+instance Semigroup String where
+  (<>) = append
+  {-# inline (<>) #-}
+
+instance Monoid String where
+  mempty = empty
+  {-# inline mempty #-}
+
+instance IsString String where
+  fromString = String.fromList
+
+instance IsList String where
+  type Item String = Char
+  fromListN = todo
+  fromList  = todo
+  toList    = toList
+
+instance Show String where
+  show s = "\"" ++ toList s ++ "\""
+
+----------------
+-- Public Api --
+----------------
+
+append :: String -> String -> String
+append (String _ _ 0#) b = b
+append a (String _ _ 0#) = a
+append (String buf0 off0 len0) (String buf1 off1 len1) =
+  let len = len0 +# len1
+      buf = runByteArrayST $ \s0 ->
+        case newByteArray# len s0 of
+          (# s1, mb #) -> case copyByteArray# buf0 off0 mb 0# len0 s1 of
+            s2 -> case copyByteArray# buf1 off1 mb len1 len1 s2 of
+              s3 -> case unsafeFreezeByteArray# mb s3 of
+                (# s4, b #) -> (# s4, b #)
+  in String buf 0# len
+{-# inline append #-}
+
+empty :: String
+empty = String (case mempty of { ByteArray b -> b }) 0# 0#
+{-# inline empty #-}
+
+toList :: String -> [Char]
+toList xs = Exts.build (\c n -> foldr c n xs)
+{-# inline toList #-}
+
+fromList :: [Char] -> String
+fromList cs = case byteArrayFromList cs of
+  ByteArray b -> String b 0# (sizeofByteArray# b)
+{-# inline fromList #-}
+
+foldr :: (Char -> b -> b) -> b -> String -> b
+foldr f z0 = \s@(String _ off len) ->
+  let end = off +# len
+      go ix
+        | isTrue# (end ># ix) = case nextChar s ix of
+            Iter ix' c -> f (C# c) (go ix')
+        | otherwise = z0
+  in go 0#
+{-# inline foldr #-}
+
+foldl' :: (b -> Char -> b) -> b -> String -> b
+foldl' f z0 = \s@(String _ off len) ->
+  let end = off +# len
+      go ix !acc
+        | isTrue# (ix <# end) = case nextChar s ix of
+            Iter ix' c -> go ix' (f acc (C# c))
+        | otherwise = acc
+  in go 0# z0
+{-# inline foldl' #-}
+
+data Iter = Iter
+  Int#  -- next byte to index
+  Char# -- char at the previous byte index
+
+instance Show Iter where
+  show (Iter i# c#) = "Iter " ++ show (I# i#) ++ " " ++ show (C# c#)
+
+nextChar :: String -> Int# -> Iter
+nextChar (String buf off _) i =
+  case indexWord8Array# buf (off +# i) of
+    w0 -> let w = W8# w0
+          in if | iub8  w -> let c = chr8 w0
+                             in Iter (i +# 1#) c
+                | iub16 w -> let w1 = indexWord8Array# buf (off +# i +# 1#)
+                                 c  = chr16 w0 w1
+                             in Iter (i +# 2#) c
+                | iub24 w -> let w1 = indexWord8Array# buf (off +# i +# 1#)
+                                 w2 = indexWord8Array# buf (off +# i +# 2#)
+                                 c  = chr24 w0 w1 w2
+                             in Iter (i +# 3#) c
+                | iub32 w -> let w1 = indexWord8Array# buf (off +# i +# 1#)
+                                 w2 = indexWord8Array# buf (off +# i +# 2#)
+                                 w3 = indexWord8Array# buf (off +# i +# 3#)
+                                 c  = chr32 w0 w1 w2 w3
+                             in Iter (i +# 4#) c
+                | otherwise -> error $ "invalid UTF-8 header byte: " ++ show w
+{-# noinline nextChar #-}
+
+-------------
+-- Helpers --
+-------------
 
 sameByteArray# :: ByteArray# -> ByteArray# -> Bool
 sameByteArray# b0# b1# =
@@ -89,306 +183,117 @@ neq :: Int# -> Int# -> Bool
 neq x y = case x ==# y of { 0# -> True; _ -> False; }
 {-# inline neq #-}
 
-append :: String -> String -> String
-append (String _ _ 0#) b = b
-append a (String _ _ 0#) = a
-append (String buf0 off0 len0) (String buf1 off1 len1) =
-  let len = len0 +# len1
-      ByteArray buf = runByteArrayST $ ST $ \s0 ->
-        case newByteArray# len s0 of
-          (# s1, buf #) -> case copyByteArray# buf0 off0 buf 0# len0 s1 of
-            s2 -> case copyByteArray# buf1 off1 buf len1 len1 s2 of
-              s3 -> case unsafeFreezeByteArray# buf s3 of
-                (# s4, b #) -> (# s4, ByteArray b #)
-  in String buf 0# len
-{-# inline append #-}
+runByteArrayST :: (forall s. State# s -> (# State# s, ByteArray# #)) -> ByteArray#
+runByteArrayST f = runRW# (\s0 -> case f s0 of { (# _, r #) -> r })
+{-# noinline runByteArrayST #-}
 
-empty :: String
-empty = String (case mempty of { ByteArray b -> b }) 0# 0#
+todo :: a
+todo = error "TODO"
+{-# noinline todo #-}
 
-runByteArrayST :: (forall s. ST s ByteArray) -> ByteArray
-runByteArrayST f = ByteArray (runRW# (\s0 -> case f of { ST g -> case g s0 of { (# _, ByteArray r #) -> r }}))
-{-# inline runByteArrayST #-}
+-- Check if the header byte indicates a
+-- first-plane byte sequence.
+--
+-- > all (== True) $ map iub8 [0b0000_0000..0b0111_1111]
+-- > all (== False) $ map iub8 [0b1000_0000..maxBound]
+--
+-- Mask Info
+-- Hex:     0x80
+-- Binary:  1000 0000
+-- Decimal: 128
+iub8 :: Word8 -> Bool
+iub8 w = w .&. 0x80 == 0
+{-# inline iub8 #-}
 
+-- Check if the header byte indicates a
+-- second-plane byte sequence.
+--
+-- > all (== False) $ map iub16 [0b0000_0000..0b1011_1111]
+-- > all (== True) $ map iub16 [0b1100_0000..0b1101_1111]
+-- > all (== False) $ map iub16 [0b1110_0000..maxBound]
+--
+-- Mask Info
+-- Hex:     0xE0
+-- Binary:  1110 0000
+-- Decimal: 240
+iub16 :: Word8 -> Bool
+iub16 w = w .&. 0xE0 == 0xC0
+{-# inline iub16 #-}
 
-{-
-instance Ord String where
-  compare b0 b1 = compare (toByteArray b0) (toByteArray b1)
+-- Check if the header byte indicates a
+-- third-plane byte sequence.
+--
+-- > all (== False) $ map iub24 [0b0000_0000..0b1101_1111]
+-- > all (== True) $ map iub24 [0b1110_0000..0b1110_1111]
+-- > all (== False) $ map iub24 [0b1111_0000..maxBound]
+--
+-- Mask Info
+-- Hex:     0xF0
+-- Binary:  1111 0000
+-- Decimal: 240
+iub24 :: Word8 -> Bool
+iub24 w = w .&. 0xF0 == 0xE0
+{-# inline iub24 #-}
 
-instance Semigroup String where
-  (<>) = append
-  {-# inline (<>) #-}
+-- Check if the header byte indicates a
+-- fourth-plane byte sequence.
+--
+-- > all (== False) $ map iub32 [0b0000_0000..0b1110_1111]
+-- > all (== True) $ map iub32 [0b1111_0000..0b1111_0111]
+-- > all (== False) $ map iub32 [0b1111_1000..maxBound]
+--
+-- Mask Info
+-- Hex:     0xF8
+-- Binary:  1111 1000
+-- Decimal: 248
+iub32 :: Word8 -> Bool
+iub32 w = w .&. 0xF8 == 0xF0
+{-# inline iub32 #-}
 
-instance Monoid String where
-  mempty = empty
-  {-# inline mempty #-}
+-- Check if the remaining bytes in the sequence
+-- adhere to the UTF-8 encoding of b10xxxxxx
+--
+-- > and $ map iubO [minBound..0b0111_1111] === False
+-- > and $ map iubO [0b1100_0000..maxBound] === False
+-- > and $ map iubO [0b1000_0000..0b1011_1111] === True
 
-instance IsString String where
-  fromString = build . fromString
+-- Mask Info
+-- Hex:     0xC0
+-- Binary:  1100 0000
+-- Decimal: 192
+iubO :: Word8 -> Bool
+iubO w = w .&. 0xC0 == 0x80
+{-# inline iubO #-}
 
-instance Show String where
-  show s = "\"" ++ toList s ++ "\""
--}
+chr8 :: Word# -> Char#
+chr8 w = chr# (word2Int# w)
 
----------------
--- Functions --
----------------
+chr16 :: Word# -> Word# -> Char#
+chr16 w0# w1# =
+  let w0 = w8_2_w16 (W8# w0#)
+      w1 = w8_2_w16 (W8# w1#)
+  in case unsafeShiftL w0 8 .|. w1 of
+       W16# w -> chr# (word2Int# w)
 
-{-
--- | Copy a slice of a 'MutableString' into another
---   'MutableString'. The two slices may not overlap.
-copyMutable :: MonadPrim s m
-  => MutableString s -- ^ destination buffer
-  -> Int -- ^ offset into destination buffer
-  -> MutableString s -- ^ source buffer
-  -> Int -- ^ offset into source buffer
-  -> Int -- ^ number of characters to copy
-  -> m ()
-copyMutable (MutableString dst#) (I# doff#)
-            (MutableString src#) (I# soff#) (I# sz#)
-  = primitive_
-      (copyMutableByteArray# src# soff# dst# doff# sz#)
+chr24 :: Word# -> Word# -> Word# -> Char#
+chr24 w0# w1# w2# =
+  let w0 = w8_2_w32 (W8# w0#)
+      w1 = w8_2_w32 (W8# w1#)
+      w2 = w8_2_w32 (W8# w2#)
+  in case unsafeShiftL w0 16 .|. unsafeShiftL w1 8 .|. w2 of
+       W32# w -> chr# (word2Int# w)
 
-copy :: MonadPrim s m
-  => MutableString s -- ^ destination array
-  -> Int -- ^ offset into destination array
-  -> String -- ^ source string
-  -> Int -- ^ offset into source string
-  -> Int -- ^ number of characters to copy
-  -> m ()
-copy (MutableString dst#) (I# doff#)
-     (String        src#) (I# soff#) (I# sz#)
-  = primitive_
-      (copyByteArray# src# soff# dst# doff# sz#)
+chr32 :: Word# -> Word# -> Word# -> Word# -> Char#
+chr32 w0# w1# w2# w3# =
+  let w0 = w8_2_w32 (W8# w0#)
+      w1 = w8_2_w32 (W8# w1#)
+      w2 = w8_2_w32 (W8# w2#)
+      w3 = w8_2_w32 (W8# w3#)
+  in case unsafeShiftL w0 24 .|. unsafeShiftL w1 16 .|. unsafeShiftL w2 8 .|. w3 of
+       W32# w -> chr# (word2Int# w)
 
-asSlice :: String -> (Slice -> a) -> a
-asSlice s f = f (unsafeToSlice s 0 (length s))
+w8_2_w16 :: Word8 -> Word16
+w8_2_w16 = fromIntegral
 
-asByteArray :: String -> (ByteArray -> a) -> a
-asByteArray s f = f (toByteArray s)
-
--- | Initialise a 'MutableString' with the given
---   capacity. None of the characters are initialised.
-new :: MonadPrim s m => Int -> m (MutableString s)
-new sz = do
-  !(MutableByteArray marr#) <- newByteArray sz
-  pure (MutableString marr#)
-
-asMutableString :: MonadPrim s m => String -> (MutableString s -> m a) -> m a
-asMutableString s f = do
-  buffer <- new (length s)
-  copy buffer 0 s 0 (length s)
-  f buffer
-
---asMutableSlice :: MonadPrim s m => String -> (MutableSlice s -> m a) -> m a
---asMutableSlice s f = do
---  buffer <- new (length s)
-
-appendSlice :: Slice -> Slice -> Slice
-appendSlice (Slice _ _ 0) b = b
-appendSlice a (Slice _ _ 0) = a
-appendSlice (Slice s0 off0 len0) (Slice s1 off1 len1) =
-  let
-    !len = len0 + len1
-    !(ByteArray b#) = runST $ do
-      buf <- newByteArray len
-      copyByteArray buf 0 (toByteArray s0) off0 len0
-      copyByteArray buf len1 (toByteArray s1) off1 len1
-      unsafeFreezeByteArray buf
-  in Slice (String b#) 0 len
-{-# inline appendSlice #-}
-
-emptySlice :: Slice
-emptySlice = Slice mempty 0 0
-{-# inline emptySlice #-}
-
-length :: String -> Int
-length (String b#) = I# (sizeofByteArray# b#)
-{-# inline length #-}
-
-index :: String -> Int -> Char
-index (String b#) (I# i#) = w2c (indexByteArray# b# i#)
-{-# inline index #-}
-
-toList :: String -> [Char]
-toList xs = Exts.build (\c n -> foldr c n xs)
-{-# inline toList #-}
-
-foldr :: (Char -> b -> b) -> b -> String -> b
-foldr f z0 = \s ->
-  let
-    !sz = length s
-    go !ix = if sz > ix
-      then f (index s ix) (go (ix + 1))
-      else z0
-  in go 0
-{-# inline foldr #-}
-
-foldl' :: (b -> Char -> b) -> b -> String -> b
-foldl' f z0 = \s ->
-  let
-    !sz = length s
-    go !ix !acc = if ix < sz
-      then go (ix + 1) (f acc (index s ix))
-      else acc
-  in go 0 z0
-{-# inline foldl' #-}
-
-empty :: String
-empty = build mempty
-{-# inline empty #-}
-
-append :: String -> String -> String
-append (String x) (String y) =
-  let
-    !(ByteArray b#) = runST $ do
-      let len_x = I# (sizeofByteArray# x)
-      let len_y = I# (sizeofByteArray# y)
-      let len = len_x + len_y
-      buf <- newByteArray len
-      copyByteArray buf 0 (ByteArray x) 0 len_x
-      copyByteArray buf len_x (ByteArray y) 0 len_y
-      unsafeFreezeByteArray buf
-  in String b#
-{-# inline append #-}
-
-newtype Builder = Builder B.Builder
-
-instance Semigroup Builder where
-  Builder x <> Builder y = Builder (x <> y)
-  {-# inline (<>) #-}
-
-instance Monoid Builder where
-  mempty = Builder mempty
-  {-# inline mempty #-}
-
-instance IsString Builder where
-  fromString = List.foldl' go mempty
-    where
-      go (Builder b) c = Builder (b <> buildAsciiChar c)
-  {-# inline fromString #-}
-
-build :: Builder -> String
-build (Builder b) = case B.build b of
-  ByteArray b# -> String b#
-{-# inline build #-}
-
-buildAsciiChar :: Char -> B.Builder
-buildAsciiChar = B.word8 . c2w
-{-# inline buildAsciiChar #-}
-
-w2c :: Word8 -> Char
-w2c = Base.unsafeChr . fromIntegral
-{-# inline w2c #-}
-
-c2w :: Char -> Word8
-c2w = fromIntegral . Char.ord
-{-# inline c2w #-}
-
-toByteArray :: String -> ByteArray
-toByteArray (String b#) = ByteArray b#
-{-# inline toByteArray #-}
-
-unsafeFromByteArray :: ByteArray -> String
-unsafeFromByteArray (ByteArray b#) = String b#
-{-# inline unsafeFromByteArray #-}
-
-fromByteArray :: ByteArray -> Maybe String
-fromByteArray b@(ByteArray b#) = if isAscii b
-  then Just (String b#)
-  else Nothing
-{-# inline fromByteArray #-}
-
--- naive, should be improved
-isAscii :: ByteArray -> Bool
-isAscii b = go 0
-  where
-    len = sizeofByteArray b
-    go !ix = if ix < len
-      then case indexByteArray b ix of
-        w -> if w < m8 then go (ix + 1) else False
-      else True
-
--- | Binary:
---     1000000010000000100000001000000010000000100000001000000010000000
---   Decimal:
---     9259542123273814144
-m64 :: Word64
-{-# inline m64 #-}
-m64 = 0x8080808080808080
-
--- | Binary:
---     10000000
---   Decimal:
---     128
-m8 :: Word8
-{-# inline m8 #-}
-m8 = 0x80
-
-{-
-isAsciiPtrW64 :: ByteArray -> Int -> Int -> Bool
-isAsciiPtrW64 b !p !q
-  | p == q = True
-  | otherwise = case indexByteArray b p of
-      (w :: Word64) -> if isAsciiW64 w
-        then isAsciiPtrW64 b (p + 8) q
-        else False
-
-isAsciiPtrW8 :: ByteArray -> Int -> Int -> Bool
-isAsciiPtrW8 b !p !q
-  | p == q = True
-  | otherwise = case indexByteArray b p of
-      (w :: Word8) -> if isAsciiW8 w
-        then isAsciiPtrW8 b (p + 1) q
-        else False
-
-
-
-isAsciiW64 :: Word64 -> Bool
-isAsciiW64 w = w .&. m64 == 0
-
-isAsciiW8 :: Word8 -> Bool
-isAsciiW8 w = w .&. m8 == 0
-
-isAsciiSmall :: ByteArray -> Int -> Int -> Bool
-isAsciiSmall b off len = go off
-  where
-    go !ix = if ix < len
-      then case indexByteArray b ix of
-        w -> if w < m8 then go (ix + 1) else False
-      else True
-
-alignPtrPos :: Int -> Int
-alignPtrPos !(I# i#) = I# (case remInt# i# 8# of
-  0# -> i#
-  n# -> i# +# (8# -# n#))
-
-alignPtrNeg :: Int -> Int
-alignPtrNeg !(I# i#) = I# (case remInt# i# 8# of
-  0# -> i#
-  n# -> i# +# (negateInt# n#))
-{-# inline alignPtrNeg #-}
-
-isAscii :: ByteArray -> Int -> Int -> Bool
-isAscii b off len
-  | len < 8 = isAsciiSmall b off len
-  | otherwise =
-      let
-        startPre, endPre, startMid, endMid, startPost, endPost :: Int
-        startPre  = off
-        endPre    = alignPtrPos startPre
-        startMid  = endPre
-        endMid    = startPost
-        startPost = alignPtrNeg endPost
-        endPost   = off + len
-
-        startIsAscii = isAsciiPtrW8 b startPre endPre
-      in if startIsAscii
-        then
-          let endIsAscii = isAsciiPtrW8 b startPost endPost
-          in if endIsAscii
-            then isAsciiPtrW64 b startMid endMid
-            else False
-        else False
--}
--}
+w8_2_w32 :: Word8 -> Word32
+w8_2_w32 = fromIntegral
