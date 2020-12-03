@@ -7,6 +7,7 @@
   , ScopedTypeVariables
   , TypeFamilies
   , UnboxedTuples
+  , ViewPatterns
 #-}
 
 module String where
@@ -17,10 +18,13 @@ import GHC.Word (Word8(..), Word16(..), Word32(..))
 import GHC.Exts hiding (build, toList)
 
 import qualified GHC.Exts as Exts
+import qualified Data.List as List
 
 import Prelude hiding (String, length, Foldable(..))
 
-{- | api sketch
+import Debug.Trace
+
+{-
 -- querying
 byteLength      :: String -> Int
 codepointLength :: String -> Int
@@ -37,6 +41,11 @@ fromUtf8Lossy  :: PrimArray Word8 -> String
 fromUtf16Lossy :: PrimArray Word8 -> String
 fromUtf32Lossy :: PrimArray Word8 -> String
 -}
+
+test :: IO ()
+test = do
+  --print $ byteArrayFromList ['1', '2', '3', '4']
+  print $ String.fromList "1234"
 
 -----------
 -- Types --
@@ -90,8 +99,15 @@ instance IsList String where
 instance Show String where
   show s = "\"" ++ toList s ++ "\""
 
+debugString :: String -> [Char]
+debugString (String _ o l) = "String { off = "
+  ++ show (I# o)
+  ++ ", len = "
+  ++ show (I# l)
+  ++ " }"
+
 ----------------
--- Public Api --
+-- Public API --
 ----------------
 
 append :: String -> String -> String
@@ -106,19 +122,33 @@ append (String buf0 off0 len0) (String buf1 off1 len1) =
               s3 -> case unsafeFreezeByteArray# mb s3 of
                 (# s4, b #) -> (# s4, b #)
   in String buf 0# len
-{-# inline append #-}
+{-# noinline append #-}
 
 empty :: String
 empty = String (case mempty of { ByteArray b -> b }) 0# 0#
 {-# inline empty #-}
 
 toList :: String -> [Char]
-toList xs = Exts.build (\c n -> foldr c n xs)
+toList (String buf _ _) = show (ByteArray buf) -- Exts.build (\c n -> foldr c n xs)
 {-# inline toList #-}
 
 fromList :: [Char] -> String
-fromList cs = case byteArrayFromList cs of
-  ByteArray b -> String b 0# (sizeofByteArray# b)
+fromList xs =
+  let listLen = case List.length xs of { I# l -> l }
+      buf = runByteArrayST $ \s0 -> case newByteArray# listLen s0 of {
+        (# s1, arr #) ->
+          let go _ acc [] s = (# s, acc #)
+              go i acc (C# c : cs) s = case writeChar arr i c s of {
+                (# s', bytesWritten #) -> go (i +# bytesWritten +# 1#) (acc +# bytesWritten) cs s'
+              }
+          in case go 0# 0# xs s1 of {
+               (# s2, size #) -> case shrinkMutableByteArray# arr size s2 of {
+                 s3 -> unsafeFreezeByteArray# arr s3
+               }
+             }
+      }
+      len = sizeofByteArray# buf
+  in String buf 0# len
 {-# inline fromList #-}
 
 foldr :: (Char -> b -> b) -> b -> String -> b
@@ -148,6 +178,7 @@ data Iter = Iter
 instance Show Iter where
   show (Iter i# c#) = "Iter " ++ show (I# i#) ++ " " ++ show (C# c#)
 
+-- iterate through the string.
 nextChar :: String -> Int# -> Iter
 nextChar (String buf off _) i =
   case indexWord8Array# buf (off +# i) of
@@ -166,7 +197,7 @@ nextChar (String buf off _) i =
                                  w3 = indexWord8Array# buf (off +# i +# 3#)
                                  c  = chr32 w0 w1 w2 w3
                              in Iter (i +# 4#) c
-                | otherwise -> error $ "invalid UTF-8 header byte: " ++ show w
+                | otherwise -> error $ "invalid UTF-8 header byte [" ++ show (I# i) ++ "]: " ++ show w
 {-# noinline nextChar #-}
 
 -------------
@@ -297,3 +328,20 @@ w8_2_w16 = fromIntegral
 
 w8_2_w32 :: Word8 -> Word32
 w8_2_w32 = fromIntegral
+
+writeChar :: MutableByteArray# s -> Int# -> Char# -> State# s -> (# State# s, Int# #)
+writeChar m i (ord# -> c) = \s0 ->
+  case c <=# 0x7f# of -- plane 1 check
+    0# -> case c <=# 0x7ff# of -- plane 2 check
+      0# -> case c <=# 0xffff# of -- plane 3 check
+        0# -> case writeWord32Array# m i (int2Word# c) s0 of { s1 -> (# s1, 4# #); }
+        -- for plane 3, there is no writeWord24Array#, so we must write the
+        -- bytes in multiple instructions
+        _  -> case int2Word# c of {
+          w -> case writeWord8Array# m i (plusWord# 0xe0## (uncheckedShiftRL64# w 12#)) s0 of {
+            s1 -> case writeWord8Array# m (i +# 1#) (plusWord# 0x80## (and# (uncheckedShiftRL64# w 6#) 0x3f##)) s1 of {
+              s2 -> case writeWord8Array# m (i +# 2#) (and# (plusWord# 0x80## w) 0x3f##) s2 of {
+                s3 -> (# s3, 3# #)
+        }}}}
+      _  -> case writeWord16Array# m i (int2Word# c) s0 of { s1 -> (# s1, 2# #); }
+    _  -> case writeWord8Array# m i (int2Word# c) s0 of { s1 -> (# s1, 1# #); }
