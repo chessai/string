@@ -1,8 +1,13 @@
+:set prompt "> "
+
+:set -XBinaryLiterals
 :set -XOverloadedStrings
 :set -XMagicHash
+:set -XNumericUnderscores
 
 import Prelude hiding (String)
 import GHC.Exts
 import GHC.Word
+import Data.Primitive
 
 default (Word8)

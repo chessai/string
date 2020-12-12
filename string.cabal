@@ -36,6 +36,8 @@ library
     src
   build-depends:
     , base >= 4.11 && < 4.17
+    , byteslice
+    , bytebuild
     , primitive >= 0.6.4 && < 0.8
   exposed-modules:
     String
