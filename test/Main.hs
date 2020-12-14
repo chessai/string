@@ -7,11 +7,22 @@
 
 module Main (main) where
 
+import Data.Coerce (coerce)
+import Data.Monoid (All(..))
 import Prelude hiding (String)
 import String (String)
 import qualified String
 
-main :: IO ()
+import qualified Conversions
+
+main :: IO Bool
 main = do
-  putStrLn $ show @String $ "123" <> "456"
-  putStrLn $ show $ map String.isUtf8 $ ["123", "456"]
+  testAll
+    [ Conversions.tests
+    ]
+
+testAll :: [IO Bool] -> IO Bool
+testAll = id
+  . coerce @_ @(IO Bool)
+  . foldMap id
+  . coerce @_ @[IO All]

@@ -62,9 +62,14 @@ test-suite test
     test
   build-depends:
     , base
+    , bytestring
+    , hedgehog
     , string
+    , text
   main-is:
     Main.hs
+  other-modules:
+    Conversions
   default-language:
     Haskell2010
 
