@@ -11,27 +11,29 @@
   , TypeApplications
   , TypeFamilies
   , UnboxedTuples
+  , UnliftedFFITypes
   , ViewPatterns
 #-}
 
 module String where
 
-import Control.Monad.ST (ST, runST)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Internal as B
 import Data.Bits ((.&.))
 import Data.Bytes.Types (Bytes(..))
 import GHC.Exts hiding (build, toList)
 import GHC.Word (Word8(..), Word64(..))
 import Numeric (showHex)
 import Prelude hiding (String, length, Foldable(..))
-import Data.Primitive.Types (sizeOf)
-import Data.Primitive.ByteArray (ByteArray)
+import Data.Primitive
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Builder as Builder
 import qualified Data.Bytes.Chunks as Chunks
 import qualified GHC.Exts as Exts
-import Foreign.Ptr (castPtr)
 import qualified Prelude
 import Foreign.C.String
+import System.IO.Unsafe (unsafePerformIO)
+import Foreign.ForeignPtr (withForeignPtr, castForeignPtr)
 
 -----------
 -- Types --
@@ -238,39 +240,6 @@ iubO :: Word8 -> Bool
 iubO w = w .&. 0xC0 == 0x80
 {-# inline iubO #-}
 
---readFile :: FilePath -> IO (Either IOException Chunks)
---readFile f =
-
-{-
-withBinaryFile :: FilePath -> IOMode -> (Handle -> IO r) -> IO (Either IOException r)
-withBinaryFile name mode x =
-  bracket
-    (openBinaryFile name mode)
-    (either (\_ -> pure ()) (\h -> hClose h))
-    (traverse x) -- wrong
-
-openBinaryFile :: FilePath -> IOMode -> IO (Either IOException Handle)
-openBinaryFile filepath iomode =
-  catchException
-    (fmap Right $ do
-      (fd, fd_type) <- FD.openFile filepath iomode
-        True {- non-blocking -}
-      mkHandleFromFD fd fd_type filepath iomode
-          False {- do not *set* non-blocking mode -}
-          Nothing {- binary mode only, ignore locale -}
-        `onException` IODevice.close fd
-    )
-    (\e -> do
-        pure
-          $ Left
-          $ addFilePathToIOError "openBinaryFile" filepath e
-    )
-
-addFilePathToIOError :: [Char] -> FilePath -> IOException -> IOException
-addFilePathToIOError fun fp ioe
-  = ioe { ioe_location = fun, ioe_filename = Just fp }
--}
-
 -----------------
 -- Conversions --
 -----------------
@@ -298,10 +267,32 @@ fromText :: Text -> String
 
 -}
 
+fromByteString :: ByteString -> Maybe String
+fromByteString b
+  | is_utf8 = Just (String (Bytes.fromByteString b))
+  | otherwise = Nothing
+  where
+    -- TODO: use accursedUnutterablePerformIO
+    is_utf8 = unsafePerformIO $ do
+      let (castForeignPtr -> fp, fromIntegral -> off, fromIntegral -> len) = B.toForeignPtr b
+      withForeignPtr fp $ \p -> pure $ isUtf8Ptr p off len
+
+fromByteArray :: ByteArray -> Maybe String
+fromByteArray b@(ByteArray b#)
+  | is_utf8 = Just (String (Bytes.fromByteArray b))
+  | otherwise = Nothing
+  where
+    is_utf8 = isUtf8ByteArray b# 0 (fromIntegral (sizeofByteArray b))
+
+fromBytes :: Bytes -> Maybe String
+fromBytes b@(Bytes (ByteArray b#) off len)
+  | is_utf8 = Just (String b)
+  | otherwise = Nothing
+  where
+    is_utf8 = isUtf8ByteArray b# (fromIntegral off) (fromIntegral len)
+
 foreign import ccall "validation.h run_utf8_validation"
   isUtf8Ptr :: CString -> Word64 -> Word64 -> Bool
 
-isUtf8 :: String -> Bool
-isUtf8 (String s) =
-  let b@(Bytes _ off len) = Bytes.pin s
-  in isUtf8Ptr (castPtr (Bytes.contents b)) (fromIntegral off) (fromIntegral len)
+foreign import ccall "validation.h run_utf8_validation"
+  isUtf8ByteArray :: ByteArray# -> Word64 -> Word64 -> Bool

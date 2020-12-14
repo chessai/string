@@ -38,7 +38,9 @@ library
     , base >= 4.11 && < 4.17
     , byteslice
     , bytebuild
+    , bytestring
     , primitive >= 0.6.4 && < 0.8
+    , text
   exposed-modules:
     String
   default-language:

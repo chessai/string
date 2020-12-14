@@ -16,6 +16,7 @@ import qualified Data.ByteString.Internal as B
 import qualified Data.Text.Encoding as TE
 import Foreign.ForeignPtr (withForeignPtr, castForeignPtr)
 import System.IO.Unsafe (unsafePerformIO)
+import Data.Maybe (isJust)
 
 import Hedgehog
 import qualified Hedgehog.Gen as Gen
@@ -36,6 +37,7 @@ prop_isUtf8WorksPositive :: Property
 prop_isUtf8WorksPositive = property $ do
   utf8Text <- forAll utf8
   assert $ isUtf8ByteString utf8Text
+  assert $ isJust $ String.fromByteString utf8Text
 
 {-
 TODO: FIX notUtf8 to guarantee it doesn't generate valid UTF-8.
