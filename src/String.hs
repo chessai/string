@@ -8,6 +8,7 @@
   , RankNTypes
   , ScopedTypeVariables
   , StandaloneDeriving
+  , TypeApplications
   , TypeFamilies
   , UnboxedTuples
   , ViewPatterns
@@ -15,44 +16,28 @@
 
 module String where
 
+import Control.Monad.ST (ST, runST)
 import Data.Bits ((.&.))
-import Numeric (showHex)
 import Data.Bytes.Types (Bytes(..))
-import Data.Primitive.ByteArray
-import Debug.Trace
 import GHC.Exts hiding (build, toList)
-import GHC.Word (Word8(..), Word16(..), Word32(..))
+import GHC.Word (Word8(..), Word64(..))
+import Numeric (showHex)
 import Prelude hiding (String, length, Foldable(..))
+import Data.Primitive.Types (sizeOf)
+import Data.Primitive.ByteArray (ByteArray)
 import qualified Data.Bytes as Bytes
-import qualified Data.List as List
-import qualified GHC.Exts as Exts
-import qualified Data.Bytes.Chunks as Chunks
 import qualified Data.Bytes.Builder as Builder
+import qualified Data.Bytes.Chunks as Chunks
+import qualified GHC.Exts as Exts
+import Foreign.Ptr (castPtr)
 import qualified Prelude
-
-{-
--- querying
-byteLength      :: String -> Int
-codepointLength :: String -> Int
-graphemeLength  :: String -> Int
-
--- conversions
-fromAscii :: PrimArray Word8 -> Maybe String
-fromUtf8  :: PrimArray Word8 -> Maybe String
-fromUtf16 :: PrimArray Word8 -> Maybe String
-fromUtf32 :: PrimArray Word8 -> Maybe String
-
-fromAsciiLossy :: PrimArray Word8 -> String
-fromUtf8Lossy  :: PrimArray Word8 -> String
-fromUtf16Lossy :: PrimArray Word8 -> String
-fromUtf32Lossy :: PrimArray Word8 -> String
--}
+import Foreign.C.String
 
 -----------
 -- Types --
 -----------
 
-newtype String = String Bytes
+newtype String = String { vec :: Bytes }
 
 ---------------
 -- Instances --
@@ -79,45 +64,57 @@ instance Show String where
 -- Public API --
 ----------------
 
+byteLength :: String -> Int
+byteLength = coerce Bytes.length
+
+charsLength :: String -> Int
+charsLength = String.foldl' (\i _ -> i + 1) 0
+
+-- grapheme length
+
 append :: String -> String -> String
-append (String x) (String y) = String (x <> y)
 {-# inline append #-}
+append (String x) (String y) = String (x <> y)
 
 empty :: String
-empty = String Bytes.empty
 {-# inline empty #-}
+empty = String Bytes.empty
 
 toList :: String -> [Char]
-toList xs = Exts.build (\c n -> foldr c n xs)
 {-# inline toList #-}
+toList xs = Exts.build (\c n -> foldr c n xs)
 
 fromList :: [Char] -> String
+{-# inline fromList #-}
 fromList xs = String
   $ Chunks.concat
   $ Builder.run 4080
   $ Prelude.foldMap Builder.char xs
 
 foldr :: (Char -> b -> b) -> b -> String -> b
+{-# inline foldr #-}
 foldr f z0 = \s@(String (Bytes _ off0 len0)) ->
   let go !off !len
         | len == 0 = z0
-        | otherwise = case traceShowId (nextChar s off) of
+        | otherwise = case nextChar s off of
             Next bytesConsumed c -> f c (go (off + bytesConsumed) (len - bytesConsumed))
   in go off0 len0
-{-# inline foldr #-}
 
 foldl' :: (b -> Char -> b) -> b -> String -> b
+{-# inline foldl' #-}
 foldl' f z0 = \s@(String (Bytes _ off0 len0)) ->
   let go !acc !off !len
         | len == 0 = acc
         | otherwise = case nextChar s off of
             Next bytesConsumed c -> go (f acc c) (off + bytesConsumed) (len - bytesConsumed)
   in go z0 off0 len0
-{-# inline foldl' #-}
 
-data Iter = Next Int Char
-  deriving (Show)
+-- (bytesConsumed, charAtPreviousIndex)
+data Iter = Next {-# unpack #-} !Int {-# unpack #-} !Char
 
+-- (unsafely) iterate through a 'String'
+-- doesn't perform bounds checks. this should be done on
+-- a per use-case basis
 nextChar :: String -> Int -> Iter
 nextChar (String bytes) i =
   let header = Bytes.unsafeIndex bytes i
@@ -240,3 +237,71 @@ iub32 w = w .&. 0xF8 == 0xF0
 iubO :: Word8 -> Bool
 iubO w = w .&. 0xC0 == 0x80
 {-# inline iubO #-}
+
+--readFile :: FilePath -> IO (Either IOException Chunks)
+--readFile f =
+
+{-
+withBinaryFile :: FilePath -> IOMode -> (Handle -> IO r) -> IO (Either IOException r)
+withBinaryFile name mode x =
+  bracket
+    (openBinaryFile name mode)
+    (either (\_ -> pure ()) (\h -> hClose h))
+    (traverse x) -- wrong
+
+openBinaryFile :: FilePath -> IOMode -> IO (Either IOException Handle)
+openBinaryFile filepath iomode =
+  catchException
+    (fmap Right $ do
+      (fd, fd_type) <- FD.openFile filepath iomode
+        True {- non-blocking -}
+      mkHandleFromFD fd fd_type filepath iomode
+          False {- do not *set* non-blocking mode -}
+          Nothing {- binary mode only, ignore locale -}
+        `onException` IODevice.close fd
+    )
+    (\e -> do
+        pure
+          $ Left
+          $ addFilePathToIOError "openBinaryFile" filepath e
+    )
+
+addFilePathToIOError :: [Char] -> FilePath -> IOException -> IOException
+addFilePathToIOError fun fp ioe
+  = ioe { ioe_location = fun, ioe_filename = Just fp }
+-}
+
+-----------------
+-- Conversions --
+-----------------
+
+{-
+
+====================
+== FROM Encodings ==
+====================
+
+T \in { ByteString, ShortByteString (Pinned|Unpinned), ByteArray, Bytes, CString }
+
+Encoding \in { Ascii, UTF-{8,16,32} }
+
+fromEncoding :: T -> Either ConversionError String
+fromEncodingUnchecked :: T -> String
+
+================
+== FROM Types ==
+================
+
+T \in { Text }
+
+fromText :: Text -> String
+
+-}
+
+foreign import ccall "validation.h run_utf8_validation"
+  isUtf8Ptr :: CString -> Word64 -> Word64 -> Bool
+
+isUtf8 :: String -> Bool
+isUtf8 (String s) =
+  let b@(Bytes _ off len) = Bytes.pin s
+  in isUtf8Ptr (castPtr (Bytes.contents b)) (fromIntegral off) (fromIntegral len)

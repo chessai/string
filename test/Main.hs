@@ -1,6 +1,9 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# language
+    OverloadedStrings
+  , TypeApplications
+#-}
 
-{-# options_ghc -O2 #-} -- -ddump-simpl -dsuppress-all #-}
+{-# options_ghc -O2 #-}
 
 module Main (main) where
 
@@ -10,4 +13,5 @@ import qualified String
 
 main :: IO ()
 main = do
-  putStrLn $ show $ String.fromList "1234342342" <> String.fromList "23498230489230489230840"
+  putStrLn $ show @String $ "123" <> "456"
+  putStrLn $ show $ map String.isUtf8 $ ["123", "456"]

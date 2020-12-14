@@ -47,6 +47,14 @@ library
     -Wall
     -O2
 
+  extra-libraries:
+    simdjson
+    stdc++
+  include-dirs:
+    cbits
+  c-sources:
+    cbits/validation.cpp
+
 test-suite test
   type:
     exitcode-stdio-1.0
