@@ -17,23 +17,23 @@
 
 module String where
 
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Internal as B
 import Data.Bits ((.&.))
+import Data.ByteString (ByteString)
 import Data.Bytes.Types (Bytes(..))
+import Data.Primitive
+import Foreign.C.String
+import Foreign.ForeignPtr (withForeignPtr, castForeignPtr)
 import GHC.Exts hiding (build, toList)
 import GHC.Word (Word8(..), Word64(..))
 import Numeric (showHex)
 import Prelude hiding (String, length, Foldable(..))
-import Data.Primitive
+import System.IO.Unsafe (unsafePerformIO)
+import qualified Data.ByteString.Internal as B
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Builder as Builder
 import qualified Data.Bytes.Chunks as Chunks
 import qualified GHC.Exts as Exts
 import qualified Prelude
-import Foreign.C.String
-import System.IO.Unsafe (unsafePerformIO)
-import Foreign.ForeignPtr (withForeignPtr, castForeignPtr)
 
 -----------
 -- Types --
@@ -275,7 +275,7 @@ fromByteString b
     -- TODO: use accursedUnutterablePerformIO
     is_utf8 = unsafePerformIO $ do
       let (castForeignPtr -> fp, fromIntegral -> off, fromIntegral -> len) = B.toForeignPtr b
-      withForeignPtr fp $ \p -> pure $ isUtf8Ptr p off len
+      withForeignPtr fp $ \(Ptr p) -> pure $ isUtf8Ptr p off len
 
 fromByteArray :: ByteArray -> Maybe String
 fromByteArray b@(ByteArray b#)
@@ -291,8 +291,18 @@ fromBytes b@(Bytes (ByteArray b#) off len)
   where
     is_utf8 = isUtf8ByteArray b# (fromIntegral off) (fromIntegral len)
 
+fromCString :: CString -> Maybe String
+fromCString (Ptr a)
+  | is_utf8 = Just (String (Bytes.fromCString# a))
+  | otherwise = Nothing
+  where
+    is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
+
 foreign import ccall "validation.h run_utf8_validation"
-  isUtf8Ptr :: CString -> Word64 -> Word64 -> Bool
+  isUtf8Ptr :: Addr# -> Word64 -> Word64 -> Bool
 
 foreign import ccall "validation.h run_utf8_validation"
   isUtf8ByteArray :: ByteArray# -> Word64 -> Word64 -> Bool
+
+foreign import ccall unsafe "strlen"
+  cstringLength# :: Addr# -> Int#

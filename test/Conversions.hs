@@ -27,16 +27,9 @@ import qualified String
 tests :: IO Bool
 tests = checkSequential $$(discover)
 
-isUtf8ByteString :: ByteString -> Bool
-isUtf8ByteString b = unsafePerformIO $ do
-  let (castForeignPtr -> fp, fromIntegral -> off, fromIntegral -> len) = B.toForeignPtr b
-  withForeignPtr fp $ \p -> pure $ String.isUtf8Ptr p off len
-{-# noinline isUtf8ByteString #-} -- should be safe regardless but w/e
-
 prop_isUtf8WorksPositive :: Property
 prop_isUtf8WorksPositive = property $ do
   utf8Text <- forAll utf8
-  assert $ isUtf8ByteString utf8Text
   assert $ isJust $ String.fromByteString utf8Text
 
 {-
