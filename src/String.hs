@@ -298,10 +298,10 @@ fromCString (Ptr a)
   where
     is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
 
-foreign import ccall "validation.h run_utf8_validation"
+foreign import ccall unsafe "validation.h run_utf8_validation"
   isUtf8Ptr :: Addr# -> Word64 -> Word64 -> Bool
 
-foreign import ccall "validation.h run_utf8_validation"
+foreign import ccall unsafe "validation.h run_utf8_validation"
   isUtf8ByteArray :: ByteArray# -> Word64 -> Word64 -> Bool
 
 foreign import ccall unsafe "strlen"
