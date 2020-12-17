@@ -17,21 +17,32 @@
 
 module String where
 
+import Control.Monad.Primitive (primitive, unsafePrimToPrim)
+import Control.Monad.ST (ST, runST)
 import Data.Bits ((.&.))
 import Data.ByteString (ByteString)
+import Data.ByteString.Short.Internal (ShortByteString(..))
 import Data.Bytes.Types (Bytes(..))
 import Data.Primitive
-import Foreign.C.String
+import Data.Text.Internal (Text(..))
+import Foreign.C.String (CString)
+import Foreign.C.Types (CSize(..))
 import Foreign.ForeignPtr (withForeignPtr, castForeignPtr)
+import Foreign.Ptr (minusPtr)
 import GHC.Exts hiding (build, toList)
 import GHC.Word (Word8(..), Word64(..))
 import Numeric (showHex)
 import Prelude hiding (String, length, Foldable(..))
-import System.IO.Unsafe (unsafePerformIO)
+import System.IO.Unsafe (unsafeDupablePerformIO)
 import qualified Data.ByteString.Internal as B
 import qualified Data.Bytes as Bytes
 import qualified Data.Bytes.Builder as Builder
 import qualified Data.Bytes.Chunks as Chunks
+import qualified Data.Text as Text
+import qualified Data.Text.Array as TextArray
+import qualified Foreign.Marshal.Alloc as Foreign
+import qualified Foreign.Marshal.Utils as Foreign
+import qualified Foreign.Storable as Foreign
 import qualified GHC.Exts as Exts
 import qualified Prelude
 
@@ -245,58 +256,94 @@ iubO w = w .&. 0xC0 == 0x80
 -----------------
 
 {-
-
-====================
-== FROM Encodings ==
-====================
-
-T \in { ByteString, ShortByteString (Pinned|Unpinned), ByteArray, Bytes, CString }
-
-Encoding \in { Ascii, UTF-{8,16,32} }
-
-fromEncoding :: T -> Either ConversionError String
-fromEncodingUnchecked :: T -> String
-
-================
-== FROM Types ==
-================
-
-T \in { Text }
-
-fromText :: Text -> String
-
+TODO: Would be great to have multiple encoding support.
+Right now all `fromT` expect UTF-8.
 -}
 
+-- | Convert a UTF-8-encoded 'ByteString' to a 'String'
 fromByteString :: ByteString -> Maybe String
 fromByteString b
   | is_utf8 = Just (String (Bytes.fromByteString b))
   | otherwise = Nothing
   where
-    -- TODO: use accursedUnutterablePerformIO
-    is_utf8 = unsafePerformIO $ do
+    is_utf8 = B.accursedUnutterablePerformIO $ do
       let (castForeignPtr -> fp, fromIntegral -> off, fromIntegral -> len) = B.toForeignPtr b
       withForeignPtr fp $ \(Ptr p) -> pure $ isUtf8Ptr p off len
+    {-# inline is_utf8 #-}
+{-# inline fromByteString #-}
 
+-- | Convert a UTF-8-encoded 'ShortByteString' to a 'String'
+fromShortByteString :: ShortByteString -> Maybe String
+fromShortByteString (SBS b)
+  = fromByteArray (ByteArray b)
+{-# inline fromShortByteString #-}
+
+-- | Convert a UTF-8-encoded 'ByteArray' to a 'String'
 fromByteArray :: ByteArray -> Maybe String
 fromByteArray b@(ByteArray b#)
   | is_utf8 = Just (String (Bytes.fromByteArray b))
   | otherwise = Nothing
   where
     is_utf8 = isUtf8ByteArray b# 0 (fromIntegral (sizeofByteArray b))
+    {-# inline is_utf8 #-}
+{-# inline fromByteArray #-}
 
+-- | Convert a UTF-8-encoded 'Bytes' to a 'String'
 fromBytes :: Bytes -> Maybe String
 fromBytes b@(Bytes (ByteArray b#) off len)
   | is_utf8 = Just (String b)
   | otherwise = Nothing
   where
     is_utf8 = isUtf8ByteArray b# (fromIntegral off) (fromIntegral len)
+    {-# inline is_utf8 #-}
+{-# inline fromBytes #-}
 
+-- | Convert a UTF-8-encoded 'CString' to a 'String'
 fromCString :: CString -> Maybe String
 fromCString (Ptr a)
   | is_utf8 = Just (String (Bytes.fromCString# a))
   | otherwise = Nothing
   where
     is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
+    {-# inline is_utf8 #-}
+{-# inline fromCString #-}
+
+-- | Convert a UTF-16-encoded 'Text' to a 'String'
+--
+--   /Note/: This does not return a 'Maybe' because
+--           'Text' is always well-formed UTF-16 unless
+--           constructed via some unsafe methodology.
+fromText :: Text -> String
+fromText (Text arr off len)
+  | len == 0 = String.empty
+  | otherwise = unsafeDupablePerformIO go
+  where
+    go :: IO String
+    go = do
+      -- number of bytes to allocate per code unit.
+      -- maximum expansion from UTF-16 -> UTF-8 is
+      -- 50%, as characters < 0xFFFF, which are all
+      -- encoded with as one code unit, get encoded
+      -- with at most 3 bytes in UTF-8.
+      let allocPerUnit = 3
+      ptr <- Foreign.mallocBytes (len * allocPerUnit)
+      Foreign.with ptr $ \destPtr -> do
+        c_encode_utf8 destPtr (TextArray.aBA arr) (fromIntegral off) (fromIntegral len)
+        newDest <- Foreign.peek destPtr
+        let utf8Len = newDest `minusPtr` ptr
+        mbuf <- newByteArray utf8Len
+        copyPtrToByteArray ptr mbuf 0 utf8Len
+        buf <- unsafeFreezeByteArray mbuf
+        pure (String (Bytes buf 0 utf8Len))
+
+copyPtrToByteArray :: Ptr a -> MutableByteArray RealWorld -> Int -> Int -> IO ()
+copyPtrToByteArray (Ptr addr) (MutableByteArray arr) (I# off) (I# len)
+  = primitive $ \s0 -> case copyAddrToByteArray# addr arr off len s0 of
+      s1 -> (# s1, () #)
+
+---------------------
+-- Foreign Imports --
+---------------------
 
 foreign import ccall unsafe "validation.h run_utf8_validation"
   isUtf8Ptr :: Addr# -> Word64 -> Word64 -> Bool
@@ -306,3 +353,6 @@ foreign import ccall unsafe "validation.h run_utf8_validation"
 
 foreign import ccall unsafe "strlen"
   cstringLength# :: Addr# -> Int#
+
+foreign import ccall unsafe "encode_utf8.h text_encode_utf8"
+  c_encode_utf8 :: Ptr (Ptr Word8) -> ByteArray# -> CSize -> CSize -> IO ()

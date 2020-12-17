@@ -24,6 +24,8 @@ import qualified Hedgehog.Range as Range
 
 import qualified String
 
+import Control.Monad.IO.Class (liftIO)
+
 tests :: IO Bool
 tests = checkSequential $$(discover)
 
@@ -31,6 +33,12 @@ prop_isUtf8WorksPositive :: Property
 prop_isUtf8WorksPositive = property $ do
   utf8Text <- forAll utf8
   assert $ isJust $ String.fromByteString utf8Text
+
+prop_fromTextDoesntFail :: Property
+prop_fromTextDoesntFail = property $ do
+  text <- forAll text
+  let f = String.fromText text
+  assert $ String.byteLength (String.fromText text) >= 0
 
 {-
 TODO: FIX notUtf8 to guarantee it doesn't generate valid UTF-8.
@@ -58,4 +66,10 @@ notUtf8 = do
   nonUtf8Encoding <$> Gen.text range genChar
   where
     range = Range.constant 1 10_000 -- empty string is UTF-8
+    genChar = Gen.unicode
+
+text :: Gen Text
+text = Gen.text range genChar
+  where
+    range = Range.constant 1 10_000
     genChar = Gen.unicode
