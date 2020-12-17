@@ -7,8 +7,7 @@
 #ifdef __cplusplus
 extern "C"
 #endif
-bool
-run_utf8_validation
+bool run_utf8_validation
   ( uint8_t * v
   , uint64_t off
   , uint64_t len
