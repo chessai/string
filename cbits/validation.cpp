@@ -1,7 +1,12 @@
 #include <simdjson.h>
+#include <stdbool.h>
 #include <stdint.h>
 
-extern "C" bool run_utf8_validation
+#ifdef __cplusplus
+extern "C"
+#endif
+bool
+run_utf8_validation
   ( const char * v
   , uint64_t off
   , uint64_t len
