@@ -31,20 +31,44 @@ extra-doc-files:
 tested-with:
   GHC == 8.6.5
 
-library
-  hs-source-dirs:
-    src
+common com
   build-depends:
-    , base >= 4.11 && < 4.17
+    , base
     , byteslice
     , bytebuild
     , bytestring
-    , primitive >= 0.6.4 && < 0.8
+    , primitive
     , text
+
+library
+  import:
+    com
   exposed-modules:
     String
+    String.Conversions
+    String.Folds
+    String.Iterate
+    String.Type
+  hs-source-dirs:
+    src
   default-language:
     Haskell2010
+  default-extensions:
+    BangPatterns
+    CPP
+    DerivingStrategies
+    GeneralizedNewtypeDeriving
+    ImportQualifiedPost
+    InstanceSigs
+    MagicHash
+    MultiWayIf
+    OverloadedStrings
+    PackageImports
+    ScopedTypeVariables
+    StandaloneDeriving
+    TypeApplications
+    UnboxedTuples
+    UnliftedFFITypes
   ghc-options:
     -Wall
     -O2
