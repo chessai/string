@@ -17,7 +17,7 @@
 
 module String where
 
-import Control.Monad.Primitive (primitive, unsafePrimToPrim)
+import Control.Monad.Primitive (PrimMonad, PrimState, primitive, unsafePrimToPrim)
 import Control.Monad.ST (ST, runST)
 import Data.Bits ((.&.))
 import Data.ByteString (ByteString)
@@ -28,7 +28,7 @@ import Data.Text.Internal (Text(..))
 import Foreign.C.String (CString)
 import Foreign.C.Types (CSize(..))
 import Foreign.ForeignPtr (withForeignPtr, castForeignPtr)
-import Foreign.Ptr (minusPtr)
+import Foreign.Ptr (castPtr, minusPtr)
 import GHC.Exts hiding (build, toList)
 import GHC.Word (Word8(..), Word64(..))
 import Numeric (showHex)
@@ -272,11 +272,21 @@ fromByteString b
     {-# inline is_utf8 #-}
 {-# inline fromByteString #-}
 
+-- | Convert a 'String' to a 'ByteString'
+toByteString :: String -> ByteString
+toByteString (String b) = Bytes.toByteString b
+{-# inline toByteString #-}
+
 -- | Convert a UTF-8-encoded 'ShortByteString' to a 'String'
 fromShortByteString :: ShortByteString -> Maybe String
 fromShortByteString (SBS b)
   = fromByteArray (ByteArray b)
 {-# inline fromShortByteString #-}
+
+-- | Convert a 'String' to a 'ShortByteString'
+toShortByteString :: String -> ShortByteString
+toShortByteString (String b) = Bytes.toShortByteString b
+{-# inline toShortByteString #-}
 
 -- | Convert a UTF-8-encoded 'ByteArray' to a 'String'
 fromByteArray :: ByteArray -> Maybe String
@@ -288,6 +298,11 @@ fromByteArray b@(ByteArray b#)
     {-# inline is_utf8 #-}
 {-# inline fromByteArray #-}
 
+-- | Convert a 'String' to a 'ByteArray'
+toByteArray :: String -> ByteArray
+toByteArray (String b) = Bytes.toByteArray b
+{-# inline toByteArray #-}
+
 -- | Convert a UTF-8-encoded 'Bytes' to a 'String'
 fromBytes :: Bytes -> Maybe String
 fromBytes b@(Bytes (ByteArray b#) off len)
@@ -298,6 +313,11 @@ fromBytes b@(Bytes (ByteArray b#) off len)
     {-# inline is_utf8 #-}
 {-# inline fromBytes #-}
 
+-- | Convert a 'String' to a 'Bytes'
+toBytes :: String -> Bytes
+toBytes (String b) = b
+{-# inline toBytes #-}
+
 -- | Convert a UTF-8-encoded 'CString' to a 'String'
 fromCString :: CString -> Maybe String
 fromCString (Ptr a)
@@ -307,6 +327,12 @@ fromCString (Ptr a)
     is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
     {-# inline is_utf8 #-}
 {-# inline fromCString #-}
+
+toCString :: String -> CString
+toCString (String (Bytes buf off len)) = runST $ do
+  ptr <- unsafePrimToPrim $ Foreign.mallocBytes len
+  copyByteArrayToAddr ptr buf off len
+  pure $ castPtr ptr
 
 -- | Convert a UTF-16-encoded 'Text' to a 'String'
 --
@@ -336,7 +362,7 @@ fromText (Text arr off len)
         buf <- unsafeFreezeByteArray mbuf
         pure (String (Bytes buf 0 utf8Len))
 
-copyPtrToByteArray :: Ptr a -> MutableByteArray RealWorld -> Int -> Int -> IO ()
+copyPtrToByteArray :: PrimMonad m => Ptr a -> MutableByteArray (PrimState m) -> Int -> Int -> m ()
 copyPtrToByteArray (Ptr addr) (MutableByteArray arr) (I# off) (I# len)
   = primitive $ \s0 -> case copyAddrToByteArray# addr arr off len s0 of
       s1 -> (# s1, () #)

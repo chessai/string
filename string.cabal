@@ -65,8 +65,10 @@ test-suite test
     test
   build-depends:
     , base
+    , byteslice
     , bytestring
     , hedgehog
+    , primitive
     , string
     , text
   main-is:
