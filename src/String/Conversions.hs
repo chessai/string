@@ -152,7 +152,8 @@ fromText (Text arr off len)
         buf <- unsafeFreezeByteArray mbuf
         pure (String (Bytes buf 0 utf8Len))
 
-toText :: String -> Either String Text
+-- | Convert a 'String' to a UTF-16 encoded 'Text'
+toText :: String -> Text
 {-# inline toText #-}
 toText _ = error "TODO"
 

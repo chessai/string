@@ -1,24 +1,17 @@
-{-# language
-    OverloadedStrings
-  , TypeApplications
-#-}
-
-{-# options_ghc -O2 #-}
-
 module Main (main) where
 
-import Data.Coerce (coerce)
-import Data.Monoid (All(..))
+import "base" Data.Coerce (coerce)
+import "base" Data.Monoid (All(..))
 import Prelude hiding (String)
-import String (String)
-import qualified String
 
-import qualified Conversions
+import "this" Conversions qualified
+import "this" Typeclasses qualified
 
 main :: IO Bool
 main = do
   testAll
     [ Conversions.tests
+    , Typeclasses.tests
     ]
 
 testAll :: [IO Bool] -> IO Bool

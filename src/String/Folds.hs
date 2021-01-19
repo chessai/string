@@ -11,9 +11,10 @@ import Prelude hiding
   , foldMap'
 #endif
   )
-import "byteslice" Data.Bytes.Types (Bytes(..))
 import "this" String.Iterate
 import "this" String.Type
+
+import "byteslice" Data.Bytes.Types (Bytes(..))
 
 foldr :: (Char -> b -> b) -> b -> String -> b
 {-# inline foldr #-}
