@@ -3,6 +3,7 @@ module Main (main) where
 import "base" Data.Coerce (coerce)
 import "base" Data.Monoid (All(..))
 import Prelude hiding (String)
+import "string" String (String)
 
 import "this" Conversions qualified
 import "this" Typeclasses qualified

@@ -29,7 +29,7 @@ import "base" Data.Bits ((.&.))
 import "base" Data.Bool (Bool(..), otherwise)
 import "base" Data.Coerce (coerce)
 import "base" Data.Eq (Eq(..))
-import "base" Control.Monad (Monad, (=<<))
+import "base" Control.Monad (Monad, (=<<), (>>=), guard)
 import "base" Data.Function (($), (.), id, flip)
 import "base" Data.Functor (fmap)
 import "base" Data.List ((++))
@@ -95,28 +95,11 @@ deriving stock instance Generic String
 
 instance Show String where
   showsPrec :: Int -> String -> ShowS
-  showsPrec _ s =  id
-    . showChar '\"'
-    . showString (toList s)
-    . showChar '\"'
+  showsPrec p s = showsPrec p (toList s)
 
 instance Read String where
-  readPrec :: ReadPrec String
-  readPrec = do
-    fmap fromList $ R.parens $ do
-      R.expectP (R.Char '\"')
-      rest False R.+++ next
-    where
-      rest started = do
-        R.Char c <- R.lexP
-        case c of
-          '\"' -> pure []
-          _ -> if started then next else R.pfail
-      next = do
-        x <- R.reset (readPrec @Char)
-        xs <- rest True
-        pure (x:xs)
-
+  readsPrec :: Int -> [Char] -> [(String, [Char])]
+  readsPrec p s = [(fromList x, y) | (x, y) <- readsPrec p s]
 
 instance IsString String where
   fromString :: [Char] -> String
