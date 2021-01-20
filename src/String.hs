@@ -1,5 +1,7 @@
 {-# language
-    TypeFamilies
+    DeriveFunctor
+  , RankNTypes
+  , TypeFamilies
   , ViewPatterns
 #-}
 
@@ -23,20 +25,21 @@ module String
 
   ) where
 
-import "base" Control.Applicative (pure, (*>))
+import "base" Control.Applicative (Applicative(..))
 import "base" Control.Monad.ST (runST)
+import "base" GHC.ST (ST(..))
 import "base" Data.Bits ((.&.))
-import "base" Data.Bool (Bool(..), otherwise)
+import "base" Data.Bool (Bool(..), not, otherwise)
 import "base" Data.Coerce (coerce)
 import "base" Data.Eq (Eq(..))
-import "base" Control.Monad (Monad, (=<<), (>>=), guard)
+import "base" Control.Monad (Monad, (=<<), (>>=), guard, when)
 import "base" Data.Function (($), (.), id, flip)
-import "base" Data.Functor (fmap)
+import "base" Data.Functor (Functor, fmap)
 import "base" Data.List ((++))
 import "base" Data.Maybe (Maybe(..))
 import "base" Data.Monoid (Monoid, mempty)
 import "base" Data.Monoid (Sum(..))
-import "base" Data.Ord (Ord)
+import "base" Data.Ord (Ord, (<))
 import "base" Data.Semigroup (Semigroup, (<>))
 import "base" Data.String (IsString(..))
 import "base" Foreign.C.String (CString)
@@ -48,7 +51,7 @@ import "base" Foreign.Marshal.Utils qualified as Foreign
 import "base" Foreign.Ptr (castPtr, minusPtr)
 import "base" Foreign.Storable qualified as Foreign
 import "base" GHC.Err (error)
-import "base" GHC.Exts (IsList, ByteArray#, Ptr(..), Int#, Addr#, RealWorld, Char(..), copyAddrToByteArray#, (+#), (-#), uncheckedIShiftL#, word2Int#, chr#)
+import "base" GHC.Exts (IsList, ByteArray#, Ptr(..), Int#, Addr#, RealWorld, Char(..), State#, copyAddrToByteArray#, (+#), (-#), uncheckedIShiftL#, word2Int#, chr#)
 import "base" GHC.Exts qualified as Exts
 import "base" GHC.Generics (Generic)
 import "base" GHC.IO (IO(..))
@@ -64,7 +67,8 @@ import "base" Text.ParserCombinators.ReadPrec (ReadPrec)
 import "base" Text.ParserCombinators.ReadPrec qualified as R
 import "base" Text.Read qualified as R
 import "base" Text.Show
-import "binary" Data.Binary (Binary(..))
+import "binary" Data.Binary (Binary(..), Get)
+import "binary" Data.Binary.Put (PutM)
 import "binary" Data.Binary qualified as Binary
 import "bytebuild" Data.Bytes.Builder qualified as Builder
 import "byteslice" Data.Bytes (Bytes)
@@ -76,7 +80,7 @@ import "bytestring" Data.ByteString.Internal qualified as B
 import "bytestring" Data.ByteString.Short.Internal (ShortByteString(..))
 import "deepseq" Control.DeepSeq (NFData(..))
 import "primitive" Control.Monad.Primitive (unsafePrimToPrim)
-import "primitive" Data.Primitive.ByteArray (ByteArray(..), MutableByteArray(..), newByteArray, unsafeFreezeByteArray, copyByteArrayToAddr, sizeofByteArray)
+import "primitive" Data.Primitive.ByteArray (ByteArray(..), MutableByteArray(..), newByteArray, writeByteArray, unsafeFreezeByteArray, copyByteArrayToAddr, sizeofByteArray)
 import "text" Data.Text.Array qualified as TextArray
 import "text" Data.Text.Internal (Text(..))
 import Prelude qualified
@@ -116,22 +120,143 @@ instance IsList String where
   -- TODO: efficient fromListN
 
 instance NFData String where
+  rnf :: String -> ()
   rnf !_ = ()
 
 instance Binary String where
+  put :: String -> PutM ()
   put s = do
     put (byteLength s)
     Bytes.foldl'
       (\p b -> p *> Binary.putWord8 b)
       (pure ())
       (toBytes s)
-  get = do
-    b <- get @ByteString
-    case fromByteString b of
-      Nothing -> fail "string:String.Binary.get: encountered invalid utf-8 data"
-      Just s -> pure s
+  get :: Get String
+  get = runSTT $ do
+    len <- sttm $ get @Int
+    mbuf <- stt $ newByteArray len
+    let go !ix
+          | ix < len = do
+              g <- sttm (nextGet ix)
+              case g of
+                GetIter1 b0 -> do
+                  stt $ do
+                    writeByteArray mbuf ix b0
+                  go (ix + 1)
+                GetIter2 b0 b1 -> do
+                  stt $ do
+                    writeByteArray mbuf ix b0
+                    writeByteArray mbuf (ix + 1) b1
+                  go (ix + 2)
+                GetIter3 b0 b1 b2 -> do
+                  stt $ do
+                    writeByteArray mbuf ix b0
+                    writeByteArray mbuf (ix + 1) b1
+                    writeByteArray mbuf (ix + 2) b2
+                  go (ix + 3)
+                GetIter4 b0 b1 b2 b3 -> do
+                  stt $ do
+                    writeByteArray mbuf ix b0
+                    writeByteArray mbuf (ix + 1) b1
+                    writeByteArray mbuf (ix + 2) b2
+                    writeByteArray mbuf (ix + 3) b3
+                  go (ix + 4)
+          | otherwise = do
+              pure ()
+    go 0
+    buf <- stt $ unsafeFreezeByteArray mbuf
+    pure (String (Bytes buf 0 len))
 
--- binary, data, tojson, fromjson, lift, printfarg
+{-
+TODO: benchmark new "optimised" get against this simpler version:
+SIMD might buy us quite bit. but i doubt it
+        b <- get @ByteString
+        case fromByteString b of
+          Nothing -> sttm $ fail "string:String.Binary.get: encountered invalid utf-8 data"
+          Just s -> pure s
+-}
+
+-- Constructor tells hows how many bytes we consumed
+--
+-- see the note on 'nextGet' for why we can't re-use 'Iter'
+data GetIter
+  = GetIter1 {-# unpack #-} !Word8
+  | GetIter2 {-# unpack #-} !Word8 {-# unpack #-} !Word8
+  | GetIter3 {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8
+  | GetIter4 {-# unpack #-} {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8
+
+-- similar to 'next', except we are @get@ting from a CPS-d ByteString blob
+--
+-- we can't re-use 'Iter' without unnecessary bit-twiddling, because GHC does
+-- not expose a way to write bit-packed Chars (only has primitives for 1 byte or 4 bytes),
+-- so we write the bytes directly in sequence. this makes the implementation of
+-- 'get' noisy, but i believe it's worth it.
+nextGet :: Int -> Get GetIter
+nextGet i = do
+  header <- Binary.getWord8
+  -- extra error information for users
+  let note = ". Note that this position is relative from the start of the String, "
+             ++ " and may not be indicative of the position in the binary data as a whole."
+  -- unlike 'next', where 'String's are assumed to be well-formed,
+  -- we must check _all_ bytes here, not just the header bytes
+  let getOther pos = do
+        c <- Binary.getWord8
+        when (not (iubO c)) $ do
+          fail $ invalidCodePoint c pos
+        pure c
+  if | iub8 header -> pure (GetIter1 header)
+     | iub16 header -> do
+         c0 <- getOther (i + 1)
+         pure (GetIter2 header c0)
+     | iub24 header -> do
+         c0 <- getOther (i + 1)
+         c1 <- getOther (i + 2)
+         pure (GetIter3 header c0 c1)
+     | iub32 header -> do
+         c0 <- getOther (i + 1)
+         c1 <- getOther (i + 2)
+         c2 <- getOther (i + 3)
+         pure (GetIter4 header c0 c1 c2)
+     | otherwise -> do
+         fail $ invalidCodePoint header i ++ note
+
+data Lifted s a = Lifted (State# s) a
+  deriving stock (Functor)
+
+newtype STT s m a = STT (State# s -> m (Lifted s a))
+
+instance Functor m => Functor (STT s m) where
+  fmap f (STT g) = STT $ \s0 -> case g s0 of
+    m -> fmap (fmap f) m
+
+instance Monad m => Applicative (STT s m) where
+  pure x = STT $ \s0 -> pure (Lifted s0 x)
+  STT m <*> STT n = STT $ \s0 -> do
+    Lifted s1 f <- m s0
+    Lifted s2 x <- n s1
+    pure (Lifted s2 (f x))
+
+instance Monad m => Monad (STT s m) where
+  (>>=) :: STT s m a -> (a -> STT s m b) -> STT s m b
+  STT f >>= k = STT $ \s0 -> do
+    Lifted s1 x <- f s0
+    case k x of
+      STT g -> g s1
+
+runSTT :: Monad m => (forall s. STT s m a) -> m a
+{-# noinline runSTT #-}
+runSTT (STT f) = do
+  Lifted s a <- f Exts.realWorld#
+  pure a
+
+stt :: Monad m => ST s a -> STT s m a
+stt (ST f) = STT $ \s0 -> case f s0 of
+  (# s1, a #) -> pure (Lifted s1 a)
+
+sttm :: Monad m => m a -> STT s m a
+sttm m = STT $ \s0 -> fmap (Lifted s0) m
+
+-- data, tojson, fromjson, lift, printfarg
 
 byteLength :: String -> Int
 {-# inline byteLength #-}
@@ -335,9 +460,9 @@ iub32 w = w .&. 0xF8 == 0xF0
 -- Hex:     0xC0
 -- Binary:  1100 0000
 -- Decimal: 192
--- iubO :: Word8 -> Bool
--- iubO w = w .&. 0xC0 == 0x80
--- {-# inline iubO #-}
+iubO :: Word8 -> Bool
+iubO w = w .&. 0xC0 == 0x80
+{-# inline iubO #-}
 
 -----------------
 -- Conversions --
