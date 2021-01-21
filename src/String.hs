@@ -183,7 +183,7 @@ data GetIter
   = GetIter1 {-# unpack #-} !Word8
   | GetIter2 {-# unpack #-} !Word8 {-# unpack #-} !Word8
   | GetIter3 {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8
-  | GetIter4 {-# unpack #-} {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8
+  | GetIter4 {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8 {-# unpack #-} !Word8
 
 -- similar to 'next', except we are @get@ting from a CPS-d ByteString blob
 --
@@ -246,7 +246,7 @@ instance Monad m => Monad (STT s m) where
 runSTT :: Monad m => (forall s. STT s m a) -> m a
 {-# noinline runSTT #-}
 runSTT (STT f) = do
-  Lifted s a <- f Exts.realWorld#
+  Lifted s a <- Exts.runRW# f
   pure a
 
 stt :: Monad m => ST s a -> STT s m a
@@ -602,5 +602,3 @@ foreign import ccall unsafe "strlen"
 
 foreign import ccall unsafe "encode_utf8.h text_encode_utf8"
   c_encode_utf8 :: Ptr (Ptr Word8) -> ByteArray# -> CSize -> CSize -> IO ()
-
-
