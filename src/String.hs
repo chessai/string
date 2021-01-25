@@ -39,9 +39,10 @@ import "base" Data.List ((++))
 import "base" Data.Maybe (Maybe(..))
 import "base" Data.Monoid (Monoid, mempty)
 import "base" Data.Monoid (Sum(..))
-import "base" Data.Ord (Ord, (<))
+import "base" Data.Ord (Ord, (<), (>))
 import "base" Data.Semigroup (Semigroup, (<>))
 import "base" Data.String (IsString(..))
+import "base" Data.Void (Void)
 import "base" Foreign.C.String (CString)
 import "base" Control.Monad.Fail (fail)
 import "base" Foreign.C.Types (CSize(..))
@@ -50,8 +51,9 @@ import "base" Foreign.Marshal.Alloc qualified as Foreign
 import "base" Foreign.Marshal.Utils qualified as Foreign
 import "base" Foreign.Ptr (castPtr, minusPtr)
 import "base" Foreign.Storable qualified as Foreign
+import "base" GHC.Enum (maxBound)
 import "base" GHC.Err (error)
-import "base" GHC.Exts (IsList, ByteArray#, Ptr(..), Int#, Addr#, RealWorld, Char(..), State#, copyAddrToByteArray#, (+#), (-#), uncheckedIShiftL#, word2Int#, chr#)
+import "base" GHC.Exts (IsList, ByteArray#, MutableByteArray#, Ptr(..), Int#, Addr#, RealWorld, Char(..), State#, copyAddrToByteArray#, (+#), (-#), uncheckedIShiftL#, word2Int#, chr#)
 import "base" GHC.Exts qualified as Exts
 import "base" GHC.Generics (Generic)
 import "base" GHC.IO (IO(..))
@@ -81,6 +83,7 @@ import "bytestring" Data.ByteString.Short.Internal (ShortByteString(..))
 import "deepseq" Control.DeepSeq (NFData(..))
 import "primitive" Control.Monad.Primitive (unsafePrimToPrim)
 import "primitive" Data.Primitive.ByteArray (ByteArray(..), MutableByteArray(..), newByteArray, writeByteArray, unsafeFreezeByteArray, copyByteArrayToAddr, sizeofByteArray)
+import "text" Data.Text qualified as Text
 import "text" Data.Text.Array qualified as TextArray
 import "text" Data.Text.Internal (Text(..))
 import Prelude qualified
@@ -488,7 +491,8 @@ fromByteString b
   where
     is_utf8 = B.accursedUnutterablePerformIO $ do
       let (castForeignPtr -> fp, fromIntegral -> off, fromIntegral -> len) = B.toForeignPtr b
-      withForeignPtr fp $ \(Ptr p) -> pure $ isUtf8Ptr p off len
+      withForeignPtr fp $ \(Ptr p) -> do
+        pure $ isUtf8Ptr# p off len
     {-# inline is_utf8 #-}
 
 -- | Convert a 'String' to a 'ByteString'
@@ -538,19 +542,43 @@ toBytes :: String -> Bytes
 toBytes (String b) = b
 
 -- | Convert a UTF-8-encoded 'CString' to a 'String'
-fromCString :: CString -> Maybe String
+fromCString :: CString -> IO (Maybe String)
 {-# inline fromCString #-}
-fromCString (Ptr a)
+fromCString (Ptr a) = do
+  let p = Ptr @Void a
+  CSize wlen <- cstringLength p
+  is_utf8 <- isUtf8Ptr p 0 wlen
+  if | wlen > intToWord64 maxBound -> do
+         pure Nothing
+     | is_utf8 -> do
+        let len = word64ToInt wlen
+        dst <- newByteArray len
+        copyPtrToByteArray p dst 0 len
+        buf <- unsafeFreezeByteArray dst
+        pure (Just (String (Bytes buf 0 len)))
+     | otherwise -> do
+         pure Nothing
+  where
+    word64ToInt :: Word64 -> Int
+    word64ToInt = fromIntegral
+
+    intToWord64 :: Int -> Word64
+    intToWord64 = fromIntegral
+
+{-
+unsafeFromAddr# :: Addr# -> Maybe String
+unsafeFromAddr# a
   | is_utf8 = Just (String (Bytes.fromCString# a))
   | otherwise = Nothing
   where
     is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
     {-# inline is_utf8 #-}
+-}
 
-toCString :: String -> CString
+toCString :: String -> IO CString
 {-# inline toCString #-}
-toCString (String (Bytes buf off len)) = runST $ do
-  ptr <- unsafePrimToPrim $ Foreign.mallocBytes len
+toCString (String (Bytes buf off len)) = do
+  ptr <- Foreign.mallocBytes len
   copyByteArrayToAddr ptr buf off len
   pure $ castPtr ptr
 
@@ -583,7 +611,9 @@ fromText (Text arr off len)
 -- | Convert a 'String' to a UTF-16 encoded 'Text'
 toText :: String -> Text
 {-# inline toText #-}
-toText _ = error "TODO"
+toText (String (Bytes buf off len))
+  | len == 0 = Text.empty
+  | otherwise = error "TODO"
 
 copyPtrToByteArray :: Ptr a -> MutableByteArray RealWorld -> Int -> Int -> IO ()
 {-# inline copyPtrToByteArray #-}
@@ -592,13 +622,19 @@ copyPtrToByteArray (Ptr addr) (MutableByteArray arr) (I# off) (I# len)
       s1 -> (# s1, () #)
 
 foreign import ccall unsafe "validation.h run_utf8_validation"
-  isUtf8Ptr :: Addr# -> Word64 -> Word64 -> Bool
+  isUtf8Ptr# :: Addr# -> Word64 -> Word64 -> Bool
+
+foreign import ccall unsafe "validation.h run_utf8_validation"
+  isUtf8Ptr :: Ptr Void -> Word64 -> Word64 -> IO Bool
 
 foreign import ccall unsafe "validation.h run_utf8_validation"
   isUtf8ByteArray :: ByteArray# -> Word64 -> Word64 -> Bool
 
-foreign import ccall unsafe "strlen"
-  cstringLength# :: Addr# -> Int#
+foreign import ccall unsafe "string.h strlen"
+  cstringLength :: Ptr Void -> IO CSize
+
+--foreign import ccall unsafe "decode_utf8.h text_decode_utf8"
+--  c_decode_utf8 :: MutableByteArray# s -> Ptr CSize -> Ptr Word8 -> Ptr Word8 -> IO (Ptr Word8)
 
 foreign import ccall unsafe "encode_utf8.h text_encode_utf8"
   c_encode_utf8 :: Ptr (Ptr Word8) -> ByteArray# -> CSize -> CSize -> IO ()
