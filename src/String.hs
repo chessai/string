@@ -614,6 +614,7 @@ toText :: String -> Text
 toText (String (Bytes buf off len))
   | len == 0 = Text.empty
   | otherwise = error "TODO"
+-- TODO: implement: https://hackage.haskell.org/package/text-1.2.4.1/docs/src/Data.Text.Encoding.html#decodeUtf8With
 
 copyPtrToByteArray :: Ptr a -> MutableByteArray RealWorld -> Int -> Int -> IO ()
 {-# inline copyPtrToByteArray #-}
@@ -633,8 +634,8 @@ foreign import ccall unsafe "validation.h run_utf8_validation"
 foreign import ccall unsafe "string.h strlen"
   cstringLength :: Ptr Void -> IO CSize
 
---foreign import ccall unsafe "decode_utf8.h text_decode_utf8"
---  c_decode_utf8 :: MutableByteArray# s -> Ptr CSize -> Ptr Word8 -> Ptr Word8 -> IO (Ptr Word8)
+foreign import ccall unsafe "decode_utf8.h text_decode_utf8"
+  c_decode_utf8 :: MutableByteArray# s -> Ptr CSize -> Ptr Word8 -> Ptr Word8 -> IO (Ptr Word8)
 
 foreign import ccall unsafe "encode_utf8.h text_encode_utf8"
   c_encode_utf8 :: Ptr (Ptr Word8) -> ByteArray# -> CSize -> CSize -> IO ()
