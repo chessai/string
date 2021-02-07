@@ -565,15 +565,17 @@ fromCString (Ptr a) = do
     intToWord64 :: Int -> Word64
     intToWord64 = fromIntegral
 
-{-
-unsafeFromAddr# :: Addr# -> Maybe String
-unsafeFromAddr# a
+-- | Convert a compile-time literal string into a 'String'.
+--
+-- fromAddr# "foobar"#
+fromAddr# :: Addr# -> Maybe String
+{-# inline fromAddr# #-}
+fromAddr# a
   | is_utf8 = Just (String (Bytes.fromCString# a))
   | otherwise = Nothing
   where
     is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
     {-# inline is_utf8 #-}
--}
 
 toCString :: String -> IO CString
 {-# inline toCString #-}
@@ -633,6 +635,10 @@ foreign import ccall unsafe "validation.h run_utf8_validation"
 
 foreign import ccall unsafe "string.h strlen"
   cstringLength :: Ptr Void -> IO CSize
+
+-- doesn't respect sequencing, only valid on cstrings in .rodata
+foreign import ccall unsafe "string.h strlen"
+  cstringLength :: Addr# -> CSize
 
 foreign import ccall unsafe "decode_utf8.h text_decode_utf8"
   c_decode_utf8 :: MutableByteArray# s -> Ptr CSize -> Ptr Word8 -> Ptr Word8 -> IO (Ptr Word8)

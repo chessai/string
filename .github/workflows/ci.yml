@@ -25,7 +25,9 @@ jobs:
 
     - name: Install simdjson (Ubuntu)
       if: runner.os == 'Linux'
-      run: sudo apt-get install libsimdjson-dev
+      run: |
+        sudo apt update
+        sudo apt-get install libsimdjson-dev
 
     - name: Install simdjson (MacOS)
       if: runner.os == 'MacOS'
