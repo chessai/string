@@ -574,7 +574,7 @@ fromAddr# a
   | is_utf8 = Just (String (Bytes.fromCString# a))
   | otherwise = Nothing
   where
-    is_utf8 = isUtf8Ptr a 0 (fromIntegral (I# (cstringLength# a)))
+    is_utf8 = isUtf8Ptr# a 0 (fromIntegral (I# (cstringLength# a)))
     {-# inline is_utf8 #-}
 
 toCString :: String -> IO CString
@@ -638,7 +638,7 @@ foreign import ccall unsafe "string.h strlen"
 
 -- doesn't respect sequencing, only valid on cstrings in .rodata
 foreign import ccall unsafe "string.h strlen"
-  cstringLength :: Addr# -> CSize
+  cstringLength# :: Addr# -> Int#
 
 foreign import ccall unsafe "decode_utf8.h text_decode_utf8"
   c_decode_utf8 :: MutableByteArray# s -> Ptr CSize -> Ptr Word8 -> Ptr Word8 -> IO (Ptr Word8)
