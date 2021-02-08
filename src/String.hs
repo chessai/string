@@ -11,10 +11,13 @@ module String
     -- * Construction
   , append
   , empty
+  , singleton
+  , splitAt
 
     -- * Querying
   , charLength
   , byteLength
+  , null
 
     -- * Conversions
   , fromList, toList
@@ -36,8 +39,9 @@ module String
   ) where
 
 import "base" Control.Applicative (Applicative(..))
-import "base" GHC.ST (ST(..))
-import "base" Data.Bits ((.&.))
+import "base" GHC.ST (ST(..), runST)
+import "base" Data.Char (ord)
+import "base" Data.Bits (shiftR, (.&.))
 import "base" Data.Bool (Bool(..), not, otherwise)
 import "base" Data.Coerce (coerce)
 import "base" Data.Eq (Eq(..))
@@ -48,7 +52,7 @@ import "base" Data.List ((++))
 import "base" Data.Maybe (Maybe(..))
 import "base" Data.Monoid (Monoid, mempty)
 import "base" Data.Monoid (Sum(..))
-import "base" Data.Ord (Ord, (<), (>))
+import "base" Data.Ord (Ord, (<), (>), (<=), (>=))
 import "base" Data.Semigroup (Semigroup, (<>))
 import "base" Data.String (IsString(..))
 import "base" Data.Void (Void)
@@ -276,6 +280,10 @@ charLength = coerce
   @(String -> Int)
   (foldMap' (\_ -> Sum 1))
 
+null :: String -> Bool
+{-# inline null #-}
+null s = charLength s == 0
+
 --graphemeLength :: String -> Int
 
 append :: String -> String -> String
@@ -288,6 +296,23 @@ append = coerce
 empty :: String
 {-# inline empty #-}
 empty = coerce Bytes.empty
+
+singleton :: Char -> String
+{-# inline singleton #-}
+singleton c = runST $ do
+  -- TODO: deduplicate branching between charBytes/writePackedChar
+  let len = charBytes c
+  mbuf <- newByteArray len
+  _ <- writePackedChar mbuf 0 c
+  buf <- unsafeFreezeByteArray mbuf
+  pure (String (Bytes buf 0 len))
+
+splitAt :: Int -> String -> (String, String)
+{-# inline splitAt #-}
+splitAt n s@(String (Bytes buf off len))
+  | n <= 0    = (empty, s)
+  | n >= len  = (s, empty)
+  | otherwise = (String (Bytes buf off n), String (Bytes buf (off + n) (len - n)))
 
 -----------
 -- Folds --
@@ -621,6 +646,42 @@ toText (String (Bytes buf off len))
   | len == 0 = Text.empty
   | otherwise = error "TODO"
 -- TODO: implement: https://hackage.haskell.org/package/text-1.2.4.1/docs/src/Data.Text.Encoding.html#decodeUtf8With
+
+charBytes :: Char -> Int
+charBytes = go . ord
+  where
+    go c
+      | c <= 0x7f  = 1
+      | c <= 0x7ff = 2
+      | c <= 0xfff = 3
+      | otherwise  = 4
+
+writePackedChar :: MutableByteArray s -> Int -> Char -> ST s Int
+writePackedChar mbuf ix = \c -> go (ord c)
+  where
+    go c
+      | c <= 0x7f = do
+          writeByteArray mbuf ix (intToWord8 c)
+          pure 1
+      | c <= 0x7ff = do
+          writeByteArray mbuf ix (intToWord8 (0xc0 + (c `shiftR` 6)))
+          writeByteArray mbuf (ix + 1) (intToWord8 (0x80 + (c .&. 0x3f)))
+          pure 2
+      | c <= 0xfff = do
+          writeByteArray mbuf ix (intToWord8 (0xe0 + (c `shiftR` 12)))
+          writeByteArray mbuf (ix + 1) (intToWord8 (0x80 + ((c `shiftR` 6) .&. 0x3f)))
+          writeByteArray mbuf (ix + 2) (intToWord8 (0x80 + c .&. 0x3f))
+          pure 3
+      | otherwise = do
+          writeByteArray mbuf ix (intToWord8 (0xf0 + (c `shiftR` 18)))
+          writeByteArray mbuf (ix + 1) (intToWord8 (0x80 + ((c `shiftR` 12) .&. 0x3f)))
+          writeByteArray mbuf (ix + 2) (intToWord8 (0x80 + ((c `shiftR` 6) .&. 0x3f)))
+          writeByteArray mbuf (ix + 3) (intToWord8 (0x80 + c .&. 0x3f))
+          pure 4
+
+intToWord8 :: Int -> Word8
+intToWord8 = fromIntegral
+{-# inline intToWord8 #-}
 
 copyPtrToByteArray :: Ptr a -> MutableByteArray RealWorld -> Int -> Int -> IO ()
 {-# inline copyPtrToByteArray #-}
