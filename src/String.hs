@@ -8,12 +8,21 @@
 module String
   ( String
 
+    -- * Construction
+  , append
+  , empty
+
+    -- * Querying
+  , charLength
+  , byteLength
+
     -- * Conversions
   , fromList, toList
   , fromByteString, toByteString
   , fromShortByteString, toShortByteString
   , fromByteArray, toByteArray
   , fromBytes, toBytes
+  , fromAddr#
   , fromCString, toCString
   , fromText, toText
 
@@ -22,18 +31,18 @@ module String
   , foldl'
   , foldMap
   , foldMap'
-
+  , foldrM
+  , foldlM'
   ) where
 
 import "base" Control.Applicative (Applicative(..))
-import "base" Control.Monad.ST (runST)
 import "base" GHC.ST (ST(..))
 import "base" Data.Bits ((.&.))
 import "base" Data.Bool (Bool(..), not, otherwise)
 import "base" Data.Coerce (coerce)
 import "base" Data.Eq (Eq(..))
-import "base" Control.Monad (Monad, (=<<), (>>=), guard, when)
-import "base" Data.Function (($), (.), id, flip)
+import "base" Control.Monad (Monad, (=<<), (>>=), when)
+import "base" Data.Function (($), (.))
 import "base" Data.Functor (Functor, fmap)
 import "base" Data.List ((++))
 import "base" Data.Maybe (Maybe(..))
@@ -60,14 +69,10 @@ import "base" GHC.IO (IO(..))
 import "base" GHC.Int (Int(..))
 import "base" GHC.Num ((+), (*), (-))
 import "base" GHC.Read (Read(..))
-import "base" GHC.Read qualified as R
 import "base" GHC.Real (fromIntegral)
 import "base" GHC.Word (Word8(..), Word64(..))
 import "base" Numeric (showHex)
 import "base" System.IO.Unsafe (unsafeDupablePerformIO)
-import "base" Text.ParserCombinators.ReadPrec (ReadPrec)
-import "base" Text.ParserCombinators.ReadPrec qualified as R
-import "base" Text.Read qualified as R
 import "base" Text.Show
 import "binary" Data.Binary (Binary(..), Get)
 import "binary" Data.Binary.Put (PutM)
@@ -81,7 +86,6 @@ import "bytestring" Data.ByteString (ByteString)
 import "bytestring" Data.ByteString.Internal qualified as B
 import "bytestring" Data.ByteString.Short.Internal (ShortByteString(..))
 import "deepseq" Control.DeepSeq (NFData(..))
-import "primitive" Control.Monad.Primitive (unsafePrimToPrim)
 import "primitive" Data.Primitive.ByteArray (ByteArray(..), MutableByteArray(..), newByteArray, writeByteArray, unsafeFreezeByteArray, copyByteArrayToAddr, sizeofByteArray)
 import "text" Data.Text qualified as Text
 import "text" Data.Text.Array qualified as TextArray
@@ -265,9 +269,9 @@ byteLength :: String -> Int
 {-# inline byteLength #-}
 byteLength = coerce Bytes.length
 
-charsLength :: String -> Int
-{-# inline charsLength #-}
-charsLength = coerce
+charLength :: String -> Int
+{-# inline charLength #-}
+charLength = coerce
   @(String -> Sum Int)
   @(String -> Int)
   (foldMap' (\_ -> Sum 1))
