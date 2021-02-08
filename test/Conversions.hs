@@ -47,12 +47,14 @@ prop_roundtripsBytes
       String.toBytes
       String.fromBytes
 
+{-
 prop_roundtripsCString :: Property
 prop_roundtripsCString
   = roundtrips
       Generators.cstring
       String.toCString
       String.fromCString
+-}
 
 roundtrips :: (Show bytes)
   => Gen bytes
